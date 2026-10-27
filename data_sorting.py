@@ -28,7 +28,7 @@ def _read_source(path: Path, village: int, dataset: str) -> pd.DataFrame:
         keep_default_na=True,
     )
     frame["ratvillage"] = village
-    frame["dataset"] = dataset
+    frame["dataset"] = f"{dataset}_rv{village}"
     return frame
 
 
@@ -44,6 +44,16 @@ def load_all_villages() -> pd.DataFrame:
             )
         for dataset in ("early_training", "global_trials_pi"):
             frames.append(_read_source(Path(inputs[dataset]), village, dataset))
+
+    # Working memory was collected only in RV1. Its source is optional until the
+    # corresponding task switch is enabled.
+    if settings.Working_Memory:
+        wm_path = settings.VILLAGE_INPUTS.get(1, {}).get("working_memory")
+        if wm_path is None:
+            raise ValueError(
+                "Working_Memory is enabled, but RV1 working_memory has no path in settings.py."
+            )
+        frames.append(_read_source(Path(wm_path), 1, "working_memory"))
 
     # sort=False preserves source column order and adds columns present in other files.
     combined = pd.concat(frames, ignore_index=True, sort=False)
