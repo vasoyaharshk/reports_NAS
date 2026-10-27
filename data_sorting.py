@@ -45,15 +45,16 @@ def load_all_villages() -> pd.DataFrame:
         for dataset in ("early_training", "global_trials_pi"):
             frames.append(_read_source(Path(inputs[dataset]), village, dataset))
 
-    # Working memory was collected only in RV1. Its source is optional until the
-    # corresponding task switch is enabled.
-    if settings.Working_Memory:
-        wm_path = settings.VILLAGE_INPUTS.get(1, {}).get("working_memory")
-        if wm_path is None:
-            raise ValueError(
-                "Working_Memory is enabled, but RV1 working_memory has no path in settings.py."
-            )
+    # Include RV1 Working Memory whenever its source exists, even if the
+    # Working_Memory report is switched off. This keeps the independent
+    # trials-per-task output complete. Enabling the report requires the source.
+    wm_path = settings.VILLAGE_INPUTS.get(1, {}).get("working_memory")
+    if wm_path is not None and Path(wm_path).is_file():
         frames.append(_read_source(Path(wm_path), 1, "working_memory"))
+    elif settings.Working_Memory:
+        raise ValueError(
+            "Working_Memory is enabled, but its RV1 source is missing. Set the working_memory path in settings.py."
+        )
 
     # sort=False preserves source column order and adds columns present in other files.
     combined = pd.concat(frames, ignore_index=True, sort=False)
@@ -397,8 +398,13 @@ def _add_inactive_hours(data: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
-def sort_trial_data() -> pd.DataFrame:
-    """Run the first-stage merge, cleaning, and configured task selection."""
+def sort_trial_data(apply_filters: bool = False) -> pd.DataFrame:
+    """Merge and clean every source row.
+
+    Task switches are report switches. Keeping this base dataset complete lets
+    the independent trials-per-task report include disabled task families.
+    Call with apply_filters=True only when a task-filtered export is wanted.
+    """
     data = load_all_villages()
     if "trial_result" in data.columns:
         data = data.loc[data["trial_result"].notna()].copy()
@@ -408,7 +414,10 @@ def sort_trial_data() -> pd.DataFrame:
     data = _add_session_fields(data)
     data = _apply_cb_half_screen_correction(data)
     data = _add_inactive_hours(data)
-    data = apply_task_switches(data)
+    if "task" in data.columns:
+        data["task_category"] = data["task"].map(_task_family)
+    if apply_filters:
+        data = apply_task_switches(data)
 
     if "datetime" in data.columns:
         data = data.sort_values(["ratvillage", "subject", "datetime"], kind="stable", na_position="last")
