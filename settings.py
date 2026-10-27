@@ -44,4 +44,3 @@ INACTIVE_HOURS_FILE = None
 OUTPUT_DIRECTORY = Path("/path/to/reports_NAS/output")
 OUTPUT_FILENAME = "sorted_trials.csv"
 CSV_SEPARATOR = ";"
-DATETIME_TIMEZONE = "UTC"
