@@ -201,6 +201,46 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def _rename_historical_tasks(data: pd.DataFrame) -> pd.DataFrame:
+    """Apply the subject- and date-specific run labels used in the R workflow."""
+    required = {"subject", "task", "date"}
+    if not required.issubset(data.columns):
+        return data
+    data = data.copy()
+    date = pd.to_datetime(data["date"], errors="coerce")
+    subject = data["subject"].astype("string").str.lower()
+    task = data["task"].astype("string")
+
+    def rename(mask: pd.Series, new_name: str) -> None:
+        data.loc[mask.fillna(False), "task"] = new_name
+
+    before = date.lt(pd.Timestamp("2025-07-10"))
+    rename(subject.eq("sorrel") & before & task.eq("Probability_Training_BB_Size_Acc"), "Probability_Training_BB_Size_Acc_First_Run")
+    rename(subject.eq("sorrel") & date.ge(pd.Timestamp("2025-07-10")) & task.eq("Probability_WebersLaw_Pre"), "Probability_WebersLaw_Pre_Second_Run")
+    rename(subject.eq("sorrel") & before & task.eq("Probability_WL_Training_Acc"), "Probability_WL_Training_Acc_First_Run")
+
+    before = date.lt(pd.Timestamp("2025-08-05"))
+    rename(subject.eq("ciri") & before & task.eq("Probability_Training_BB_Size_Acc"), "Probability_Training_BB_Size_Acc_First_Run")
+    rename(subject.eq("ciri") & date.ge(pd.Timestamp("2025-08-05")) & task.eq("Probability_WebersLaw_Pre"), "Probability_WebersLaw_Pre_Second_Run")
+    rename(subject.eq("ciri") & before & task.eq("Probability_WL_Training_Acc"), "Probability_WL_Training_Acc_First_Run")
+
+    rename(subject.eq("gal") & date.lt(pd.Timestamp("2025-08-27")) & task.eq("Probability_WL_Training_Runthrough_Acc"), "Probability_WL_Training_Runthrough_Acc_First_Run")
+    rename(subject.eq("gal") & date.ge(pd.Timestamp("2025-08-27")) & date.lt(pd.Timestamp("2025-11-30")) & task.eq("Probability_WL_Training_Runthrough_Acc"), "Probability_WL_Training_Runthrough_Acc_Second_Run")
+    rename(subject.eq("gal") & date.ge(pd.Timestamp("2025-08-27")) & task.eq("Probability_WebersLaw_Pre"), "Probability_WebersLaw_Pre_Second_Run")
+    rename(subject.eq("gal") & date.lt(pd.Timestamp("2025-08-27")) & task.eq("Probability_WL_Training_Acc"), "Probability_WL_Training_Acc_First_Run")
+    rename(subject.eq("gal") & date.lt(pd.Timestamp("2025-08-27")) & task.eq("Probability_WebersLaw_Post"), "Probability_WebersLaw_Post_First_Run")
+
+    rename(subject.eq("monika") & date.lt(pd.Timestamp("2025-12-03")) & task.eq("Probability_Extra_Training_Acc_Stage_2"), "Probability_Extra_Training_Acc_Stage_2_First_Run")
+    rename(subject.eq("monika") & date.lt(pd.Timestamp("2025-12-03")) & task.eq("Probability_Extra_Training_Acc"), "Probability_Extra_Training_Acc_First_Run")
+    rename(subject.eq("phoebe") & date.lt(pd.Timestamp("2025-12-09")) & task.eq("Probability_Extra_Training_Acc_Stage_2"), "Probability_Extra_Training_Acc_Stage_2_First_Run")
+    rename(subject.eq("phoebe") & date.lt(pd.Timestamp("2025-12-09")) & task.eq("Probability_Extra_Training_Acc"), "Probability_Extra_Training_Acc_First_Run")
+    rename(subject.eq("phoebe") & date.lt(pd.Timestamp("2026-01-25")) & task.eq("A_TouchTeaching_blue"), "A_TouchTeaching_blue_First_Run")
+    rename(subject.eq("phoebe") & date.lt(pd.Timestamp("2026-01-30")) & task.eq("Probability_Extra_Training_Acc_FF"), "Probability_Extra_Training_Acc_FF_First_Run")
+    rename(subject.eq("joy") & date.ge(pd.Timestamp("2025-03-11")) & task.eq("Probability_WebersLaw_Pre"), "Probability_WebersLaw_Pre_Second_Run")
+    rename(subject.isin(["gal", "sparky"]) & date.lt(pd.Timestamp("2026-05-29")) & task.eq("Probability_Training_BT_Acc_FF"), "Probability_Training_BT_Acc_FF_First_Run")
+    return data
+
+
 def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
     data = data.copy()
     if "response_x" in data.columns and "trial_result" in data.columns:
@@ -275,6 +315,63 @@ def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def _apply_cb_half_screen_correction(data: pd.DataFrame) -> pd.DataFrame:
+    """Recalculate RV2 Cognitive Bias responses recorded before the screen change."""
+    required = {"ratvillage", "datetime", "task", "trial_result", "response_x", "side"}
+    if not required.issubset(data.columns):
+        return data
+    data = data.copy()
+    cutoff = pd.Timestamp("2026-04-30 16:30:00", tz="Europe/Madrid").tz_convert("UTC")
+    cb_tasks = {
+        "Cognitive_Bias_Auditory_Training_60R",
+        "Cognitive_Bias_Auditory_Training_60",
+        "Cognitive_Bias_Auditory_Training_PR_60R",
+        "Cognitive_Bias_Auditory_Training_60_PR",
+    }
+    use = data["ratvillage"].eq(2) & data["datetime"].lt(cutoff) & data["task"].isin(cb_tasks)
+    if not use.any():
+        return data
+
+    for column in ("success", "trial_result", "reward"):
+        if column in data.columns:
+            data[f"{column}_original"] = data[column]
+
+    response = pd.to_numeric(data["response_x"], errors="coerce")
+    response_side = pd.Series(pd.NA, index=data.index, dtype="string")
+    response_side.loc[use & response.lt(205)] = "left"
+    response_side.loc[use & response.ge(205)] = "right"
+    correct_side = data["side"].astype("string").str.lower()
+    is_miss = data["trial_result"].astype("string").str.lower().eq("miss")
+    success = pd.Series(pd.NA, index=data.index, dtype="Float64")
+    valid = use & ~is_miss & response_side.notna() & correct_side.notna()
+    success.loc[valid] = response_side.loc[valid].eq(correct_side.loc[valid]).astype(int)
+
+    trial_result = data["trial_result"].astype("string").copy()
+    trial_result.loc[use & is_miss] = "miss"
+    trial_result.loc[valid & success.eq(1)] = "correct"
+    trial_result.loc[valid & success.eq(0)] = "incorrect"
+    data["success_half"] = success
+    data["trial_result_half"] = trial_result
+
+    if "reward" in data.columns:
+        reward = pd.to_numeric(data["reward"], errors="coerce").astype("Float64")
+        unrewarded = pd.to_numeric(data.get("unrewarded_trial", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        valve = pd.to_numeric(data.get("valve_factor_c", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        reward_half = reward.copy()
+        reward_half.loc[use & trial_result.eq("incorrect")] = 0
+        reward_half.loc[use & trial_result.eq("miss")] = 0
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(0) & valve.eq(0.7)] = 70
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(0) & valve.eq(1.4)] = 140
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(1)] = 0
+        data["reward_half"] = reward_half
+        data["reward"] = reward_half
+    data["success"] = data.get("success", pd.Series(pd.NA, index=data.index)).astype("Float64")
+    data.loc[use, "success"] = success.loc[use]
+    data["trial_result"] = data["trial_result"].astype("string")
+    data.loc[use, "trial_result"] = trial_result.loc[use]
+    return data
+
+
 def _add_inactive_hours(data: pd.DataFrame) -> pd.DataFrame:
     workbook = settings.INACTIVE_HOURS_FILE
     if workbook is None:
@@ -306,8 +403,10 @@ def sort_trial_data() -> pd.DataFrame:
     if "trial_result" in data.columns:
         data = data.loc[data["trial_result"].notna()].copy()
     data = _add_core_fields(data)
+    data = _rename_historical_tasks(data)
     data = _add_response_fields(data)
     data = _add_session_fields(data)
+    data = _apply_cb_half_screen_correction(data)
     data = _add_inactive_hours(data)
     data = apply_task_switches(data)
 
