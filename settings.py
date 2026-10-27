@@ -10,14 +10,18 @@ VILLAGE_INPUTS = {
     1: {
         "early_training": Path("/path/to/ratvillage1/early_training_rv1.csv"),
         "global_trials_pi": Path("/path/to/ratvillage1/global_trials_pi_rv1.csv"),
+        # Working memory was only run in RV1; it is loaded only when enabled.
+        "working_memory": Path("/path/to/ratvillage1/global_trials_wm.csv"),
     },
     2: {
         "early_training": Path("/path/to/ratvillage2/early_training_rv2.csv"),
         "global_trials_pi": Path("/path/to/ratvillage2/global_trials_pi_rv2.csv"),
+        "working_memory": None,
     },
     3: {
         "early_training": Path("/path/to/ratvillage3/early_training_rv3.csv"),
         "global_trials_pi": Path("/path/to/ratvillage3/global_trials_pi_rv3.csv"),
+        "working_memory": None,
     },
 }
 
