@@ -25,7 +25,7 @@ VILLAGE_INPUTS = {
     },
 }
 
-# Task switches: True includes that task family in the sorted output.
+# Task switches: True generates that task-family report.
 Working_Memory = False
 Probability = True
 Cognitive_bias = True
@@ -44,3 +44,7 @@ INACTIVE_HOURS_FILE = None
 OUTPUT_DIRECTORY = Path("/path/to/reports_NAS/output")
 OUTPUT_FILENAME = "sorted_trials.csv"
 CSV_SEPARATOR = ";"
+
+# PDF and daily trials-per-task output location.
+REPORT_DIRECTORY = Path("/path/to/reports_NAS/reports")
+TRIALS_REPORT_DAYS = 30
