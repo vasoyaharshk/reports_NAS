@@ -120,6 +120,9 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
     """Apply the common cleaning and derived columns from the R workflow."""
     data = data.copy()
 
+    if "correct_th" in data.columns and "incorrect_th" in data.columns:
+        data = data.rename(columns={"correct_th": "correct_th_pos", "incorrect_th": "incorrect_th_pos"})
+
     if "subject" in data.columns:
         data["subject"] = data["subject"].astype("string").str.strip()
         excluded = {str(subject).lower() for subject in settings.EXCLUDED_SUBJECTS}
@@ -180,6 +183,21 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
             )
         data["date"] = parsed_date.dt.date
 
+    if {"task", "date"}.issubset(data.columns):
+        years = pd.to_datetime(data["date"], errors="coerce").dt.year
+        is_weber = data["task"].astype("string").eq("Probability_WebersLaw")
+        data.loc[is_weber & years.eq(2025), "task"] = "Probability_WebersLaw_Pre"
+        data.loc[is_weber & years.ne(2025), "task"] = "Probability_WebersLaw_Pilot"
+
+    if {"current_condition", "trial_condition"}.intersection(data.columns):
+        current = pd.to_numeric(data.get("current_condition", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        trial = pd.to_numeric(data.get("trial_condition", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        condition = current.combine_first(trial)
+        data["condition_type"] = pd.Series(pd.NA, index=data.index, dtype="string")
+        valid = condition.notna()
+        data.loc[valid & condition.mod(2).eq(0), "condition_type"] = "big"
+        data.loc[valid & condition.mod(2).eq(1), "condition_type"] = "small"
+
     return data
 
 
@@ -203,7 +221,7 @@ def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
         data.loc[valid & (data["lastresponse"] >= 200), "response_side"] = "right"
 
     correct_column = "correct_th_pos" if "correct_th_pos" in data.columns else "correct_th"
-    grouping = [column for column in ("subject", "task", "stage_substage", "session") if column in data.columns]
+    grouping = [column for column in ("ratvillage", "subject", "task", "stage_substage", "session") if column in data.columns]
     if correct_column in data.columns and grouping:
         numeric = pd.to_numeric(data[correct_column], errors="coerce")
         grouped = data.assign(_correct_numeric=numeric).groupby(grouping, dropna=False)["_correct_numeric"]
@@ -217,8 +235,9 @@ def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
 
 def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
     data = data.copy()
+    group_columns = [column for column in ("ratvillage", "subject", "session") if column in data.columns]
     if {"subject", "session", "datetime", "datetime_end"}.issubset(data.columns):
-        grouped = data.dropna(subset=["subject", "session"]).groupby(["subject", "session"], dropna=False)
+        grouped = data.dropna(subset=["subject", "session"]).groupby(group_columns, dropna=False)
         starts = grouped["datetime"].transform("min")
         ends = grouped["datetime_end"].transform("max")
         duration = (ends - starts).dt.total_seconds() / 60
@@ -229,6 +248,30 @@ def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
         data["minutes_from_start"] = (data["seconds_from_start"] // 60).astype("Int64")
         data["datetime_h"] = data["datetime"].dt.strftime("%Y-%m-%d %H:%M")
         data["datetime_end_h"] = data["datetime_end"].dt.strftime("%Y-%m-%d %H:%M")
+
+    if "tone_played" in data.columns:
+        data["tone_played"] = data["tone_played"].astype("string").str.lower().str.title()
+
+    required = {"task", "forced_choice_actual_trial", "subject", "session"}
+    if required.issubset(data.columns):
+        data["forced_choice_actual_trial"] = pd.to_numeric(data["forced_choice_actual_trial"], errors="coerce")
+        group_columns = [column for column in ("ratvillage", "subject", "group", "pair", "task") if column in data.columns]
+        for source_task, output_task in (
+            ("Cognitive_Bias_Auditory_Training", "Cognitive_Bias_Auditory_Training_60R"),
+            ("Cognitive_Bias_Auditory_Training_PR", "Cognitive_Bias_Auditory_Training_PR_60R"),
+        ):
+            selected = data["task"].eq(source_task)
+            free_choice = selected & data["forced_choice_actual_trial"].eq(0)
+            if not free_choice.any():
+                continue
+            ordered = data.loc[free_choice]
+            sort_columns = group_columns + (["datetime"] if "datetime" in data.columns else [])
+            order = ordered.sort_values(sort_columns, kind="stable", na_position="last").index
+            block_index = data.loc[order].groupby(group_columns, dropna=False).cumcount() + 1
+            data.loc[order, "block_number"] = ((block_index - 1) // 60 + 1).to_numpy()
+            data.loc[order, "block_trial_counter"] = ((block_index - 1) % 60 + 1).to_numpy()
+            data.loc[selected, "block_size"] = 60
+            data.loc[selected, "task"] = output_task
     return data
 
 
