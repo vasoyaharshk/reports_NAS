@@ -122,7 +122,13 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
     data = data.copy()
 
     if "correct_th" in data.columns and "incorrect_th" in data.columns:
-        data = data.rename(columns={"correct_th": "correct_th_pos", "incorrect_th": "incorrect_th_pos"})
+        # Keep the source fields intact and add the aliases used by downstream
+        # report calculations. The final sorted datasheet retains every input
+        # column from the union of source files.
+        if "correct_th_pos" not in data.columns:
+            data["correct_th_pos"] = data["correct_th"]
+        if "incorrect_th_pos" not in data.columns:
+            data["incorrect_th_pos"] = data["incorrect_th"]
 
     if "subject" in data.columns:
         data["subject"] = data["subject"].astype("string").str.strip()
