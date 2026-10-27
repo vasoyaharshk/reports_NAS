@@ -16,4 +16,4 @@ python -m pip install pandas openpyxl
 python data_sorting.py
 ```
 
-The script writes a semicolon-delimited `sorted_trials.csv`. It adds village and source labels, a task category, parsed trial timestamps, response-side fields, success, condition type, session timing, and 60-trial Cognitive Bias block fields when their source columns are available. The 2025 Probability Weber's Law records are labeled as pre-test and other records as pilot. Task names outside the three configured families are retained by default and labeled `unclassified`.
+The script writes a semicolon-delimited `sorted_trials.csv`. It combines and labels the sources, parses trial timestamps, derives response and session fields, labels 2025 Probability Weber's Law records as pre-test and others as pilot, applies the historical task run labels, recalculates 60-trial Cognitive Bias blocks, and applies the RV2 half-screen correction from the R workflow. Task names outside the three configured families are retained by default and labeled `unclassified`.
