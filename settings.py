@@ -48,3 +48,15 @@ CSV_SEPARATOR = ";"
 # PDF and daily trials-per-task output location.
 REPORT_DIRECTORY = Path("/path/to/reports_NAS/reports")
 TRIALS_REPORT_DAYS = 30
+
+# RV2/RV3 before-and-after comparison, with boundaries in Europe/Madrid time.
+# Period starts are inclusive and ends are exclusive. The final None end means
+# through the latest trial in the sorted dataset.
+PERIOD_COMPARISON_TIMEZONE = "Europe/Madrid"
+PERIOD_COMPARISON_SESSION_COLUMN = None  # Auto-detect; set explicitly if needed.
+PERIOD_COMPARISON_PERIODS = [
+    {"period": "Before", "start": "2026-10-04 00:00:00", "end": "2026-10-19 00:00:00"},
+    {"period": "20ul 5%", "start": "2026-10-19 12:00:00", "end": "2026-10-22 16:00:00"},
+    {"period": "20ul 10%", "start": "2026-10-22 16:00:00", "end": None},
+]
+PERIOD_COMPARISON_OUTPUT_FILENAME = "RV2_RV3_Trials_Sessions_By_Period.xlsx"
