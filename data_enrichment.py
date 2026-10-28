@@ -1,4 +1,4 @@
-"""Attach configured environment readings and Academy session events to trials."""
+"""Attach Academy session events and session-level sensor values to trials."""
 from __future__ import annotations
 
 import logging
@@ -40,95 +40,6 @@ def _parse_local_times(values: pd.Series, timezone: str) -> pd.Series:
     else:
         parsed = parsed.dt.tz_convert(ZoneInfo(timezone))
     return parsed.dt.tz_convert("UTC")
-
-
-def _load_environment(village: int) -> pd.DataFrame:
-    paths = _as_path_list(settings.ENVIRONMENT_FILES.get(village))
-    frames = []
-    for path in paths:
-        if not path.is_file():
-            raise FileNotFoundError(f"Environment file for RV{village} not found: {path}")
-        frame = pd.read_excel(path, sheet_name=settings.ENVIRONMENT_SHEET)
-        if "timestamp" not in frame.columns:
-            raise ValueError(f"Environment sheet in {path} must contain a 'timestamp' column.")
-        frame = frame.copy()
-        frame["_environment_time_utc"] = _parse_local_times(
-            frame["timestamp"], settings.ENVIRONMENT_TIMEZONE
-        )
-        frame["_environment_source"] = path.name
-        frames.append(frame)
-    if not frames:
-        return pd.DataFrame()
-    environment = pd.concat(frames, ignore_index=True, sort=False)
-    if environment["_environment_time_utc"].isna().any():
-        raise ValueError(f"Unparseable timestamps in RV{village} environment files.")
-    environment = environment.sort_values("_environment_time_utc", kind="stable")
-    duplicate_times = environment["_environment_time_utc"].duplicated(keep=False)
-    if duplicate_times.any():
-        duplicate_count = int(duplicate_times.sum())
-        raise ValueError(
-            f"RV{village} environment files contain {duplicate_count} rows with duplicate timestamps. "
-            "Resolve overlapping exports before running reports."
-        )
-    return environment.reset_index(drop=True)
-
-
-def _attach_environment(data: pd.DataFrame) -> pd.DataFrame:
-    if "ratvillage" not in data or "datetime" not in data:
-        raise ValueError("Environment matching requires 'ratvillage' and 'datetime' columns.")
-    if "env_match_status" in data.columns:
-        raise ValueError("Environment columns already exist. Pass the un-enriched sorted data to main.py.")
-
-    result = data.copy()
-    trial_time = pd.to_datetime(result["datetime"], errors="coerce", utc=True)
-    village_number = pd.to_numeric(
-        result["ratvillage"].astype("string").str.extract(r"(\d+)$", expand=False),
-        errors="coerce",
-    )
-    result["env_timestamp"] = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns, UTC]")
-    result["env_age_seconds"] = np.nan
-    result["env_match_status"] = "no_environment_file"
-
-    for village in (1, 2, 3):
-        env = _load_environment(village)
-        village_rows = result.index[village_number.eq(village)]
-        if len(village_rows) == 0:
-            continue
-        if env.empty:
-            continue
-        sensor_columns = [c for c in env.columns if c not in {
-            "timestamp", "_environment_time_utc", "_environment_source"
-        }]
-        output_names = {column: f"env_{column}" for column in sensor_columns}
-        collisions = set(output_names.values()).intersection(result.columns)
-        if collisions:
-            raise ValueError(f"Environment output columns already exist: {sorted(collisions)}")
-        for output_name in output_names.values():
-            result[output_name] = pd.NA
-
-        valid_rows = village_rows[trial_time.loc[village_rows].notna()]
-        result.loc[village_rows, "env_match_status"] = "missing_or_invalid_trial_time"
-        result.loc[valid_rows, "env_match_status"] = "no_recent_reading"
-        if len(valid_rows) == 0:
-            continue
-
-        env_ns = env["_environment_time_utc"].array.asi8
-        trial_ns = trial_time.loc[valid_rows].array.asi8
-        match_indices = np.searchsorted(env_ns, trial_ns, side="right") - 1
-        has_previous = match_indices >= 0
-        ages = np.full(len(valid_rows), np.nan, dtype=float)
-        ages[has_previous] = (trial_ns[has_previous] - env_ns[match_indices[has_previous]]) / 1e9
-        fresh = has_previous & (ages <= settings.ENVIRONMENT_MAX_GAP_SECONDS)
-        fresh_rows = valid_rows[fresh]
-        fresh_indices = match_indices[fresh]
-        result.loc[fresh_rows, "env_timestamp"] = env["_environment_time_utc"].iloc[fresh_indices].array
-        result.loc[fresh_rows, "env_age_seconds"] = ages[fresh]
-        result.loc[fresh_rows, "env_match_status"] = "matched"
-        for source_column, output_column in output_names.items():
-            result.loc[fresh_rows, output_column] = env[source_column].iloc[fresh_indices].to_numpy()
-
-        LOGGER.info("RV%s environment matches: %s/%s", village, len(fresh_rows), len(village_rows))
-    return result
 
 
 def _normalise_subject(value: Any) -> str:
@@ -176,10 +87,10 @@ def _load_events() -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def _session_environment(events: pd.DataFrame, village: int, subject: str,
+def _session_environment(events: pd.DataFrame, village: int,
                          start: pd.Timestamp, end: pd.Timestamp | None,
                          next_start: pd.Timestamp | None) -> tuple[float, float]:
-    """Use the first valid Academy sensor message inside a session window."""
+    """Take the first logged temperature and humidity values in a session."""
     rows = events.loc[
         events["ratvillage"].eq(village)
         & events["subject_match"].eq("academy")
@@ -193,15 +104,23 @@ def _session_environment(events: pd.DataFrame, village: int, subject: str,
     if rows.empty:
         return float("nan"), float("nan")
     rows = rows.sort_values("event_time_utc", kind="stable")
+    temperature = humidity = float("nan")
     for description in rows["event_description"].astype(str):
-        temp = re.search(r"temperature\s*[:;]\s*([-+]?\d+(?:\.\d+)?)", description, re.I)
-        humidity = re.search(r"humidity\s*[:;]\s*([-+]?\d+(?:\.\d+)?)", description, re.I)
-        if temp or humidity:
-            return (
-                float(temp.group(1)) if temp else float("nan"),
-                float(humidity.group(1)) if humidity else float("nan"),
+        if np.isnan(temperature):
+            temp = re.search(
+                r"temperature\s*[:;=]\s*([-+]?\d+(?:\.\d+)?)", description, re.I
             )
-    return float("nan"), float("nan")
+            if temp:
+                temperature = float(temp.group(1))
+        if np.isnan(humidity):
+            moisture = re.search(
+                r"humidity\s*[:;=]\s*([-+]?\d+(?:\.\d+)?)", description, re.I
+            )
+            if moisture:
+                humidity = float(moisture.group(1))
+        if not np.isnan(temperature) and not np.isnan(humidity):
+            break
+    return temperature, humidity
 
 
 def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
@@ -259,14 +178,27 @@ def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
     result["_next_session_start"] = result.groupby(["ratvillage", "subject_match"])[
         "datetime_start_session"
     ].shift(-1)
+    # Sensor messages use the shared Academy subject. Stop at the next START
+    # in the village, even if it belongs to another subject, to avoid carrying
+    # a later session's readings backwards into the current one.
+    all_starts = {
+        int(village): group["event_time_utc"].sort_values(kind="stable").array.asi8
+        for village, group in events.loc[events["event_type"].eq("START")].groupby("ratvillage")
+    }
+    village_next_starts = []
+    for item in result.itertuples(index=False):
+        starts = all_starts.get(int(item.ratvillage), np.array([], dtype=np.int64))
+        pos = np.searchsorted(starts, item.datetime_start_session.value, side="right")
+        village_next_starts.append(pd.NaT if pos >= len(starts) else pd.Timestamp(starts[pos], tz="UTC"))
+    result["_next_village_start"] = village_next_starts
     result["event_temperature"] = np.nan
     result["event_humidity"] = np.nan
     for index, item in result.iterrows():
         temp, humidity = _session_environment(
-            events, int(item["ratvillage"]), str(item["subject_match"]),
+            events, int(item["ratvillage"]),
             item["datetime_start_session"],
             None if pd.isna(item["datetime_end_session"]) else item["datetime_end_session"],
-            None if pd.isna(item["_next_session_start"]) else item["_next_session_start"],
+            None if pd.isna(item["_next_village_start"]) else item["_next_village_start"],
         )
         result.at[index, "event_temperature"] = temp
         result.at[index, "event_humidity"] = humidity
@@ -339,13 +271,12 @@ def _attach_sessions(data: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
 
 
 def enrich_trial_data(data: pd.DataFrame) -> pd.DataFrame:
-    """Attach direct sensor readings and event-derived session windows.
+    """Attach event-derived session windows and one sensor pair per session.
 
-    Every source trial row and original source column is retained. Event and
-    environmental files are associated with a village in settings.py; file
-    names do not need an ``_rvN`` suffix.
+    Every source trial row and original source column is retained. Event files
+    are associated with a village in settings.py; file names do not need an
+    ``_rvN`` suffix. Configured environment workbooks are intentionally not
+    read by this step.
     """
-    enriched = _attach_environment(data)
     events = _load_events()
-    enriched = _attach_sessions(enriched, events)
-    return enriched
+    return _attach_sessions(data, events)
