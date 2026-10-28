@@ -21,9 +21,9 @@ def main() -> None:
     data = prepare_data(apply_filters=False)
     output_dir = Path(settings.OUTPUT_DIRECTORY)
     output_dir.mkdir(parents=True, exist_ok=True)
-    sorted_path = output_dir / settings.OUTPUT_FILENAME
-    data.to_csv(sorted_path, sep=settings.CSV_SEPARATOR, index=False, encoding="utf-8-sig")
-    LOGGER.info("Saved complete sorted dataset: %s (%s rows)", sorted_path, len(data))
+    prepared_path = output_dir / settings.OUTPUT_FILENAME
+    data.to_csv(prepared_path, sep=settings.CSV_SEPARATOR, index=False, encoding="utf-8-sig")
+    LOGGER.info("Saved prepared trial dataset: %s (%s rows)", prepared_path, len(data))
 
     # Each task module applies its own True/False setting. Early training and
     # trials per task are separate reports; trials per task sees every row.
