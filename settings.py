@@ -57,7 +57,8 @@ PERIOD_COMPARISON_SESSION_COLUMN = None  # Auto-detect; set explicitly if needed
 PERIOD_COMPARISON_PERIODS = [
     {"period": "Before", "start": "2026-10-04 00:00:00", "end": "2026-10-19 00:00:00"},
     {"period": "20ul 5%", "start": "2026-10-19 12:00:00", "end": "2026-10-22 16:00:00"},
-    {"period": "20ul 10%", "start": "2026-10-22 16:00:00", "end": None},
+    {"period": "20ul 10%", "start": "2026-10-22 16:00:00", "end": "2026-10-26 13:00:00"},
+    {"period": "75ul 10%", "start": "2026-10-26 13:00:00", "end": None},
 ]
 PERIOD_COMPARISON_OUTPUT_FILENAME = "RV2_RV3_Trials_Sessions_By_Period.xlsx"
 
