@@ -74,9 +74,20 @@ def _identify_columns(data: pd.DataFrame) -> tuple[str, str]:
 
 
 def _prepare_trials(data: pd.DataFrame, subject_column: str, session_column: str) -> pd.DataFrame:
-    # prepare_data.py writes these as UTC-aware timestamps. Parsing with utc=True
-    # preserves those instants and gives consistent comparisons with local bounds.
-    timestamps = pd.to_datetime(data["datetime"], errors="coerce", utc=True)
+    # Match the R script: datetime is already a parsed datetime value and must
+    # not be guessed or reinterpreted here. prepare_data.py supplies UTC-aware
+    # pandas timestamps, which represent the same instants as the source data.
+    if not pd.api.types.is_datetime64_any_dtype(data["datetime"]):
+        raise ValueError(
+            "data['datetime'] must already contain parsed datetime values; "
+            "the period report does not parse or reinterpret timestamps."
+        )
+    if data["datetime"].dt.tz is None:
+        raise ValueError(
+            "data['datetime'] must be timezone-aware, matching the POSIXt "
+            "timestamps required by the R report."
+        )
+    timestamps = data["datetime"].dt.tz_convert("UTC")
     village_number = data["ratvillage"].astype("string").str.extract(r"(\d+)$", expand=False)
     prepared = pd.DataFrame({
         "rv_number": pd.to_numeric(village_number, errors="coerce"),
@@ -98,12 +109,16 @@ def _prepare_trials(data: pd.DataFrame, subject_column: str, session_column: str
     return prepared[["ratvillage", "subject", "session_key", "datetime_utc", "day"]]
 
 
-def _make_period_tables(data: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Timestamp]:
+def _make_period_tables(data: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.Timestamp, pd.Timestamp]:
     periods = _periods()
+    period_order = [period["period"] for period in periods]
+    configured = settings.PERIOD_COMPARISON_PERIODS
     subject_column, session_column = _identify_columns(data)
     LOGGER.info("Counting sessions using column: %s", session_column)
     trials = _prepare_trials(data, subject_column, session_column)
     latest_trial = trials["datetime_utc"].max()
+    source_timezone = data["datetime"].dt.tz
+    latest_in_source_timezone = latest_trial.tz_convert(source_timezone)
     period_pieces = []
     for period in periods:
         start_utc = period["start"].tz_convert("UTC")
@@ -176,26 +191,32 @@ def _make_period_tables(data: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd
                               avg_sessions_per_subject_per_day=("sessions_per_subject_day", "mean"))
                          .reset_index())
     village_by_period.iloc[:, 2:] = village_by_period.iloc[:, 2:].round(2)
-    village_by_period = village_by_period.sort_values(["ratvillage", "period"])
+    period_rank = {name: rank for rank, name in enumerate(period_order)}
+    village_by_period["_period_order"] = village_by_period["period"].map(period_rank)
+    village_by_period = village_by_period.sort_values(["ratvillage", "_period_order"]).drop(columns="_period_order")
 
     subject_by_period = (daily_subject.groupby(["ratvillage", "subject", "period"], dropna=False)
                          .agg(avg_trials_per_subject_per_day=("trials", "mean"),
                               avg_sessions_per_subject_per_day=("sessions", "mean"))
                          .reset_index())
     subject_by_period.iloc[:, 3:] = subject_by_period.iloc[:, 3:].round(2)
-    subject_by_period = subject_by_period.sort_values(["ratvillage", "subject", "period"])
+    subject_by_period["_period_order"] = subject_by_period["period"].map(period_rank)
+    subject_by_period = subject_by_period.sort_values(
+        ["ratvillage", "subject", "_period_order"]
+    ).drop(columns="_period_order")
 
     value_columns = ["avg_trials_per_subject_per_day", "avg_sessions_per_subject_per_day"]
-    period_order = [period["period"] for period in periods]
     village_comparison = village_by_period.pivot(index="ratvillage", columns="period", values=value_columns)
     village_comparison.columns = [f"{period} | {metric}" for metric, period in village_comparison.columns]
-    village_column_order = [f"{period} | {metric}" for period in period_order for metric in value_columns]
+    # tidyr::pivot_wider() defaults to names_vary="fastest": vary the
+    # period names within each value column, matching the R workbook order.
+    village_column_order = [f"{period} | {metric}" for metric in value_columns for period in period_order]
     village_comparison = village_comparison.reset_index()
     village_comparison = village_comparison[["ratvillage", *[c for c in village_column_order if c in village_comparison]]]
     village_comparison.columns.name = None
     subject_comparison = subject_by_period.pivot(index=["ratvillage", "subject"], columns="period", values=value_columns)
     subject_comparison.columns = [f"{period} | {metric}" for metric, period in subject_comparison.columns]
-    subject_column_order = [f"{period} | {metric}" for period in period_order for metric in value_columns]
+    subject_column_order = [f"{period} | {metric}" for metric in value_columns for period in period_order]
     subject_comparison = subject_comparison.reset_index()
     subject_comparison = subject_comparison[["ratvillage", "subject", *[c for c in subject_column_order if c in subject_comparison]]]
     subject_comparison.columns.name = None
@@ -203,10 +224,10 @@ def _make_period_tables(data: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd
     latest_local = latest_trial.tz_convert(zone)
     period_settings = pd.DataFrame([
         {"period": p["period"],
-         "start": p["start"].strftime("%Y-%m-%d %H:%M:%S"),
-         "end": p["end"].strftime("%Y-%m-%d %H:%M:%S") if p["end"] is not None else "Latest available record",
-         "latest_data_record": latest_local.strftime("%Y-%m-%d %H:%M:%S %Z")}
-        for p in periods
+         "start": str(configured[period_index]["start"]),
+         "end": str(configured[period_index]["end"]) if configured[period_index].get("end") is not None else "Latest available record",
+         "latest_data_record": latest_in_source_timezone.strftime("%Y-%m-%d %H:%M:%S %Z")}
+        for period_index, p in enumerate(periods)
     ])
     tables = {
         "Village comparison": village_comparison,
@@ -215,12 +236,12 @@ def _make_period_tables(data: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], pd
         "Subject by period": subject_by_period,
         "Period settings": period_settings,
     }
-    return tables, latest_local
+    return tables, latest_local, latest_in_source_timezone
 
 
 def generate(data: pd.DataFrame) -> Path:
     """Generate the period-comparison workbook and return its path."""
-    tables, latest_local = _make_period_tables(data)
+    tables, latest_local, latest_in_source_timezone = _make_period_tables(data)
     output_path = Path(settings.REPORT_DIRECTORY) / settings.PERIOD_COMPARISON_OUTPUT_FILENAME
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -231,8 +252,11 @@ def generate(data: pd.DataFrame) -> Path:
             worksheet.auto_filter.ref = worksheet.dimensions
             for column_cells in worksheet.columns:
                 letter = column_cells[0].column_letter
-                width = min(max(max(len(str(cell.value or "")) for cell in column_cells) + 2, 12), 48)
+                width = max(len(str(cell.value or "")) for cell in column_cells) + 2
                 worksheet.column_dimensions[letter].width = width
     LOGGER.info("Period comparison saved to %s", output_path)
-    LOGGER.info("Latest trial in dataset: %s", latest_local.strftime("%Y-%m-%d %H:%M:%S %Z"))
+    LOGGER.info(
+        "Latest trial in dataset: %s",
+        latest_in_source_timezone.strftime("%Y-%m-%d %H:%M:%S %Z"),
+    )
     return output_path
