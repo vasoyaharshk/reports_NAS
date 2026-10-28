@@ -422,7 +422,13 @@ def _draw_cb_pages(pdf: PdfPages, data: pd.DataFrame) -> None:
                     ax = axes[row_idx, col_idx]
                     rows = sub_summary[(sub_summary["group_pair_label"].astype(str).eq(facet)) & (sub_summary["subject"].astype(str).eq(subject))]
                     lrows = sub_lines[(sub_lines["group_pair_label"].astype(str).eq(facet)) & (sub_lines["subject"].astype(str).eq(subject))]
-                    blocks = sorted(rows["block_number"].dropna().unique(), key=lambda value: str(value))
+                    blocks = sorted(
+                        rows["block_number"].dropna().unique(),
+                        key=lambda value: (
+                            0, float(value)
+                        ) if pd.to_numeric(pd.Series([value]), errors="coerce").notna().iloc[0]
+                        else (1, str(value)),
+                    )
                     x = np.arange(len(blocks))
                     width = 0.36
                     for tone_idx, tone in enumerate(("Low", "High")):
