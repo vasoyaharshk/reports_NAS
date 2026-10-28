@@ -69,12 +69,15 @@ EVENT_FILES = {
     3: [],
 }
 
-# Reserved for a later step. Environment workbooks are not read or matched yet.
-ENVIRONMENT_FILES = {
-    1: [],
-    2: [],
-    3: [],
+# Separate input folders keep RV2's multi-sensor master exports and RV3's
+# middle-sensor exports independent. The merge command reads CSV and Excel files.
+ENVIRONMENT_DIRECTORIES = {
+    1: None,
+    2: Path("/path/to/ratvillage2/environment"),
+    3: Path("/path/to/ratvillage3/environment"),
 }
+ENVIRONMENT_EXCEL_SHEET = "Environment"
+DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE = True
 
 # Academy event dates are written by datetime.now() as local wall time
 # (YYYY/MM/DD HH:MM:SS), without a UTC offset.
