@@ -42,7 +42,7 @@ EXCLUDED_SUBJECTS = ("m2", "m3", "luna", "rachel", "geralt", "erza", "ross")
 INACTIVE_HOURS_FILE = None
 
 OUTPUT_DIRECTORY = Path("/path/to/reports_NAS/output")
-OUTPUT_FILENAME = "sorted_trials.csv"
+OUTPUT_FILENAME = "prepared_trial_data.csv"
 CSV_SEPARATOR = ";"
 
 # PDF and daily trials-per-task output location.
