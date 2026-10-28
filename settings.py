@@ -60,3 +60,28 @@ PERIOD_COMPARISON_PERIODS = [
     {"period": "20ul 10%", "start": "2026-10-22 16:00:00", "end": None},
 ]
 PERIOD_COMPARISON_OUTPUT_FILENAME = "RV2_RV3_Trials_Sessions_By_Period.xlsx"
+
+# Explicit village mapping is used because event filenames may be renamed.
+# Each value accepts one path or a list of paths from the same village.
+EVENT_FILES = {
+    1: [],  # Example: [Path("/nas/RV1/events.csv"), Path("/nas/RV1/events_20261020.csv")]
+    2: [],
+    3: [],
+}
+
+ENVIRONMENT_FILES = {
+    1: [],
+    2: [],  # Example: [Path("/nas/RV2/environment_consolidated.xlsx")]
+    3: [],
+}
+ENVIRONMENT_SHEET = "Environment"
+ENVIRONMENT_TIMEZONE = "Europe/Madrid"  # Excel timestamps have no timezone metadata.
+ENVIRONMENT_MAX_GAP_SECONDS = 15
+
+# Academy event dates are written by datetime.now() as local wall time
+# (YYYY/MM/DD HH:MM:SS), without a UTC offset.
+EVENT_TIMEZONE = "Europe/Madrid"
+EVENT_SUBJECT_ALIASES = {"chand": "chandler"}
+EVENT_NON_ANIMAL_SUBJECTS = (
+    "academy", "none", "nan", "manual", "manual1", "manual2",
+)
