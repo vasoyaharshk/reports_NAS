@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 13900)
-Total output lines: 1167
-
 """Prepare the complete trial dataset, session events, and environment readings."""
 from __future__ import annotations
 
@@ -399,7 +396,368 @@ def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
             # dplyr::cumsum() follows the existing row order within each group.
             order = ordered.index
             block_index = data.loc[order].groupby(group_columns, dropna=False).cumcount() + 1
-        …3900 tokens truncated…ta(village: int) -> pd.DataFrame | None:
+            if source_task == "Cognitive_Bias_Auditory_Training_PR":
+                data.loc[order, "free_choice_trial_index_60"] = block_index.to_numpy()
+            data.loc[order, "block_number"] = ((block_index - 1) // 60 + 1).to_numpy()
+            data.loc[order, "block_trial_counter"] = ((block_index - 1) % 60 + 1).to_numpy()
+            data.loc[selected, "block_size"] = 60
+            data.loc[selected, "task"] = output_task
+    return data
+
+
+def _apply_cb_half_screen_correction(data: pd.DataFrame) -> pd.DataFrame:
+    """Recalculate RV2 Cognitive Bias responses recorded before the screen change."""
+    required = {"ratvillage", "datetime", "task", "trial_result", "response_x", "side"}
+    if not required.issubset(data.columns):
+        return data
+    data = data.copy()
+    cutoff = pd.Timestamp("2026-04-30 16:30:00", tz="Europe/Madrid").tz_convert("UTC")
+    cb_tasks = {
+        "Cognitive_Bias_Auditory_Training_60R",
+        "Cognitive_Bias_Auditory_Training_60",
+        "Cognitive_Bias_Auditory_Training_PR_60R",
+        "Cognitive_Bias_Auditory_Training_60_PR",
+    }
+    use = data["ratvillage"].eq(2) & data["datetime"].lt(cutoff) & data["task"].isin(cb_tasks)
+    for column in ("success", "trial_result", "reward"):
+        if column in data.columns:
+            data[f"{column}_original"] = data[column]
+
+    response = pd.to_numeric(data["response_x"], errors="coerce")
+    data["use_half_screen_correction"] = use
+    data["response_x_half_numeric"] = response.where(use)
+    response_side = pd.Series(pd.NA, index=data.index, dtype="string")
+    response_side.loc[use & response.notna() & response.lt(205)] = "left"
+    response_side.loc[use & response.ge(205)] = "right"
+    data["response_side_half"] = response_side
+    data["side"] = data["side"].astype("string").str.lower()
+    correct_side = data["side"].astype("string")
+    correct_side_half = correct_side.where(use)
+    data["correct_side_half"] = correct_side_half
+    is_miss = data["trial_result"].astype("string").eq("miss")
+    success = pd.to_numeric(data["success"], errors="coerce").astype("Float64")
+    success.loc[use] = pd.NA
+    valid = use & ~is_miss & response_side.notna() & correct_side.notna()
+    success.loc[valid] = response_side.loc[valid].eq(correct_side.loc[valid]).astype(int)
+
+    trial_result = data["trial_result"].astype("string").copy()
+    trial_result.loc[use & is_miss] = "miss"
+    trial_result.loc[valid & success.eq(1)] = "correct"
+    trial_result.loc[valid & success.eq(0)] = "incorrect"
+    data["success_half"] = success
+    data["trial_result_half"] = trial_result
+
+    if "reward" in data.columns:
+        reward = pd.to_numeric(data["reward"], errors="coerce").astype("Float64")
+        unrewarded = pd.to_numeric(data.get("unrewarded_trial", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        valve = pd.to_numeric(data.get("valve_factor_c", pd.Series(pd.NA, index=data.index)), errors="coerce")
+        reward_half = reward.copy()
+        reward_half.loc[use & trial_result.eq("incorrect")] = 0
+        reward_half.loc[use & trial_result.eq("miss")] = 0
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(0) & valve.eq(0.7)] = 70
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(0) & valve.eq(1.4)] = 140
+        reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(1)] = 0
+        data["reward_half"] = reward_half
+        data["reward"] = reward_half
+    data["success"] = success
+    data["trial_result"] = trial_result
+    return data
+
+
+def _add_inactive_hours(data: pd.DataFrame) -> pd.DataFrame:
+    workbook = settings.INACTIVE_HOURS_FILE
+    if workbook is None:
+        return data
+    workbook = Path(workbook)
+    if not workbook.is_file():
+        raise FileNotFoundError(f"Inactive-hours workbook not found: {workbook}")
+
+    pieces = []
+    for village in (1, 2, 3):
+        sheet = f"ratvillage{village}"
+        inactive = pd.read_excel(workbook, sheet_name=sheet)
+        if not {"date", "inactive_hours"}.issubset(inactive.columns):
+            raise ValueError(f"Sheet {sheet} must contain date and inactive_hours columns.")
+        inactive["ratvillage"] = village
+        pieces.append(inactive[["ratvillage", "date", "inactive_hours"]])
+    lookup = pd.concat(pieces, ignore_index=True)
+    lookup["date"] = pd.to_datetime(lookup["date"], errors="coerce").dt.date
+    lookup = lookup.drop_duplicates(["ratvillage", "date"], keep="last")
+    merged = data.merge(lookup, on=["ratvillage", "date"], how="left", suffixes=("", "_lookup"))
+    merged["inactive_hours"] = pd.to_numeric(merged["inactive_hours"], errors="coerce").fillna(0)
+    merged["total_active_hours"] = 24 - merged["inactive_hours"]
+    return merged
+
+
+def _prepare_trial_table(apply_filters: bool = False) -> pd.DataFrame:
+    """Merge and clean every source row.
+
+    Task switches are report switches. Keeping this base dataset complete lets
+    the independent trials-per-task report include disabled task families.
+    Call with apply_filters=True only when a task-filtered export is wanted.
+    """
+    data = load_all_villages()
+    if "trial_result" in data.columns:
+        data = data.loc[data["trial_result"].notna()].copy()
+    data = _add_core_fields(data)
+    data = _rename_historical_tasks(data)
+    data = _add_response_fields(data)
+    data = _add_session_fields(data)
+    data = _apply_cb_half_screen_correction(data)
+    data = _add_inactive_hours(data)
+    # These fields are explicitly made numeric at the end of the R pipeline.
+    for column in (
+        "total_trials", "forced_choice_actual_trial", "block_number",
+        "block_accuracy", "current_ror", "trial_counter_ror", "stage", "substage",
+    ):
+        if column in data.columns:
+            data[column] = pd.to_numeric(data[column], errors="coerce")
+    if "task" in data.columns:
+        data["task_category"] = data["task"].map(_task_family)
+    if apply_filters:
+        data = apply_task_switches(data)
+
+    if "datetime" in data.columns:
+        data = data.sort_values(["ratvillage", "subject", "datetime"], kind="stable", na_position="last")
+    return data.reset_index(drop=True)
+
+
+def _discover_inputs(directory: Path, village: int) -> list[Path]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Environment directory for RV{village} not found: {directory}")
+    files = sorted(
+        path for path in directory.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_SUFFIXES
+        and path.name.lower().startswith("environment")
+        and not path.name.startswith(".")
+    )
+    if not files:
+        LOGGER.info("No environment files configured for RV%s in %s", village, directory)
+    return files
+
+
+def _read_csv(path: Path) -> pd.DataFrame:
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        sample = handle.read(8192)
+    try:
+        delimiter = csv.Sniffer().sniff(sample, delimiters=";,\t,").delimiter
+    except csv.Error:
+        first_line = sample.splitlines()[0] if sample else ""
+        delimiter = max((";", ",", "\t"), key=first_line.count)
+    frame = pd.read_csv(
+        path, sep=delimiter, dtype="string", keep_default_na=False,
+        encoding="utf-8-sig", low_memory=False,
+    )
+    return frame
+
+
+def _read_input(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() == ".csv":
+        frame = _read_csv(path)
+    else:
+        frame = pd.read_excel(
+            path, sheet_name=settings.ENVIRONMENT_EXCEL_SHEET, dtype=object
+        )
+    frame.columns = [str(column).strip().lstrip("\ufeff") for column in frame.columns]
+    if not frame.columns.is_unique:
+        raise ValueError(f"Duplicate column names after trimming in {path.name}.")
+    if not len(frame.columns):
+        raise ValueError(f"No columns found in environment file {path.name}.")
+
+    # Use text values for a faithful CSV round-trip across CSV and Excel inputs.
+    for column in frame.columns:
+        frame[column] = frame[column].map(
+            lambda value: "" if pd.isna(value) else str(value)
+        ).astype("string")
+    return frame
+
+
+def _timestamp_column(frame: pd.DataFrame, source: Path) -> str:
+    matches = [column for column in frame.columns if column.strip().lower() == "timestamp"]
+    if len(matches) != 1:
+        raise ValueError(f"{source.name} must contain exactly one 'timestamp' column.")
+    return matches[0]
+
+
+def _merged_output_path(directory: Path, village: int) -> Path:
+    local_now = datetime.now(ZoneInfo("Europe/Madrid"))
+    stamp = local_now.strftime("%Y%m%d_%H%M%S")
+    output = directory / f"environment_rv{village}_{stamp}.csv"
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite existing merged file: {output}")
+    return output
+
+
+def _prepare_merge(directory: Path, village: int) -> dict | None:
+    inputs = _discover_inputs(directory, village)
+    if not inputs:
+        return None
+    existing_merged = [path for path in inputs if MERGED_NAME_PATTERN.match(path.name)]
+    if len(inputs) == 1 and existing_merged:
+        LOGGER.info("RV%s already has one merged file; nothing to do.", village)
+        return None
+
+    frames: list[pd.DataFrame] = []
+    timestamp_name: str | None = None
+    union_columns: list[str] = []
+    input_rows: dict[str, int] = {}
+
+    for path in inputs:
+        frame = _read_input(path)
+        current_timestamp_name = _timestamp_column(frame, path)
+        if timestamp_name is None:
+            timestamp_name = current_timestamp_name
+        elif current_timestamp_name != timestamp_name:
+            if timestamp_name in frame.columns:
+                raise ValueError(f"Ambiguous timestamp columns in {path.name}.")
+            frame = frame.rename(columns={current_timestamp_name: timestamp_name})
+            current_timestamp_name = timestamp_name
+        for column in frame.columns:
+            if column not in union_columns:
+                union_columns.append(column)
+        if "__merge_timestamp" in frame.columns:
+            raise ValueError(f"Reserved helper column '__merge_timestamp' found in {path.name}.")
+        frame["__merge_timestamp"] = pd.to_datetime(
+            frame[current_timestamp_name], errors="coerce", format="mixed"
+        )
+        invalid = frame["__merge_timestamp"].isna()
+        if invalid.any():
+            examples = frame.loc[invalid, current_timestamp_name].head(5).tolist()
+            raise ValueError(
+                f"RV{village} has {int(invalid.sum())} invalid timestamps in {path.name}; "
+                f"examples={examples}. No files were deleted."
+            )
+        input_rows[path.name] = len(frame)
+        frames.append(frame)
+
+    assert union_columns and timestamp_name is not None
+    for index, frame in enumerate(frames):
+        for column in union_columns:
+            if column not in frame.columns:
+                frame[column] = ""
+        frames[index] = frame.loc[:, union_columns + ["__merge_timestamp"]]
+    merged = pd.concat(frames, ignore_index=True, sort=False)
+    merged = merged.sort_values("__merge_timestamp", kind="stable").reset_index(drop=True)
+    merged = merged.loc[:, union_columns]
+    if len(merged) != sum(input_rows.values()):
+        raise RuntimeError(f"RV{village} row count changed while combining inputs.")
+
+    output = _merged_output_path(directory, village)
+    temporary = directory / f".{output.name}.tmp"
+    return {
+        "village": village,
+        "directory": directory,
+        "inputs": inputs,
+        "input_rows": input_rows,
+        "rows": merged,
+        "row_count": len(merged),
+        "columns": union_columns,
+        "timestamp_column": timestamp_name,
+        "output": output,
+        "temporary": temporary,
+    }
+
+
+def _write_and_verify(plan: dict) -> None:
+    frame = plan["rows"]
+    temporary: Path = plan["temporary"]
+    frame.to_csv(
+        temporary, index=False, sep=";", encoding="utf-8-sig", lineterminator="\n"
+    )
+    reread = pd.read_csv(
+        temporary, sep=";", dtype="string", keep_default_na=False,
+        encoding="utf-8-sig", low_memory=False,
+    )
+    if list(reread.columns) != plan["columns"]:
+        raise ValueError(f"RV{plan['village']} output header verification failed.")
+    if len(reread) != plan["row_count"]:
+        raise ValueError(f"RV{plan['village']} output row count verification failed.")
+    if not reread.equals(frame.reset_index(drop=True)):
+        raise ValueError(
+            f"RV{plan['village']} output values did not round-trip exactly; "
+            "source files have not been deleted."
+        )
+
+
+def merge_environment_files() -> list[Path]:
+    """Merge configured villages independently; delete inputs only after verification."""
+    plans = []
+    for village in (1, 2, 3):
+        directory_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
+        if directory_value is None:
+            continue
+        directory = Path(directory_value)
+        plan = _prepare_merge(directory, village)
+        if plan is not None:
+            plans.append(plan)
+
+    # Prepare and round-trip verify every village before committing any output.
+    try:
+        for plan in plans:
+            _write_and_verify(plan)
+        for plan in plans:
+            plan["temporary"].replace(plan["output"])
+    except Exception:
+        for plan in plans:
+            plan["temporary"].unlink(missing_ok=True)
+        raise
+
+    outputs = [plan["output"] for plan in plans]
+    for plan in plans:
+        duplicate_rows = int(plan["rows"].duplicated(keep=False).sum())
+        duplicate_timestamps = int(
+            plan["rows"][plan["timestamp_column"]].duplicated(keep=False).sum()
+        )
+        LOGGER.info(
+            "RV%s merged %s rows from %s files into %s; exact duplicate rows retained: %s; "
+            "repeated timestamps retained: %s",
+            plan["village"], plan["row_count"], len(plan["inputs"]),
+            plan["output"], duplicate_rows, duplicate_timestamps,
+        )
+
+    if settings.DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE:
+        # Every merged output is committed and verified before any source is removed.
+        for plan in plans:
+            for source in plan["inputs"]:
+                source.unlink()
+            LOGGER.info("Removed %s source files for RV%s after verification.", len(plan["inputs"]), plan["village"])
+    else:
+        LOGGER.info("Input deletion is disabled in settings.py; all source files were kept.")
+    return outputs
+
+
+def _as_path_list(value: Any) -> list[Path]:
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    return [Path(path) for path in value if path is not None]
+
+
+def _parse_local_times(values: pd.Series, timezone: str) -> pd.Series:
+    """Parse naive Academy wall times in the configured local timezone."""
+    parsed = pd.to_datetime(values, errors="coerce", format="mixed")
+    if parsed.dt.tz is None:
+        # A repeated wall time during the autumn clock change cannot be
+        # disambiguated from this log format, which contains no UTC offset.
+        parsed = parsed.dt.tz_localize(
+            ZoneInfo(timezone), ambiguous="NaT", nonexistent="shift_forward"
+        )
+    else:
+        parsed = parsed.dt.tz_convert(ZoneInfo(timezone))
+    return parsed.dt.tz_convert("UTC")
+
+
+def _normalise_subject(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    subject = str(value).strip().lower()
+    aliases = {str(key).lower(): str(val).lower() for key, val in settings.EVENT_SUBJECT_ALIASES.items()}
+    return aliases.get(subject, subject)
+
+
+def _load_environment_data(village: int) -> pd.DataFrame | None:
     """Load the consolidated sensor file for one village, if configured."""
     directory_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
     if directory_value is None:
