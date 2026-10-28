@@ -1,6 +1,6 @@
 """Configuration for reports_NAS.
 
-Edit the paths below on the NAS host before running data_sorting.py.
+Edit the paths below on the NAS host before running prepare_data.py.
 CSV inputs use the semicolon separator used by the source exports.
 """
 from pathlib import Path
