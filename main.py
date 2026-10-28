@@ -8,6 +8,7 @@ import Cognitive_bias
 import Early_Training
 import Period_Comparison
 import Probability
+import Status_Activity_Report
 import Trials_Per_Task
 import Working_Memory_Report
 import settings
@@ -28,6 +29,7 @@ def main() -> None:
     # Each task module applies its own True/False setting. Early training and
     # trials per task are separate reports; trials per task sees every row.
     outputs = [
+        Status_Activity_Report.generate(data),
         Early_Training.generate(data),
         Working_Memory_Report.generate(data),
         Cognitive_bias.generate(data),
