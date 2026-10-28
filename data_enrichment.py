@@ -1,4 +1,4 @@
-"""Attach Academy session events and session-level sensor values to trials."""
+"""Attach Academy session events and nearest environment readings to sessions."""
 from __future__ import annotations
 
 import logging
@@ -13,10 +13,8 @@ import pandas as pd
 import settings
 
 LOGGER = logging.getLogger("reports_nas.data_enrichment")
-SESSION_OUTPUT_COLUMNS = (
-    "event_session_id", "event_session_task", "datetime_start_session",
-    "datetime_end_session", "event_session_status", "event_temperature",
-    "event_humidity",
+ENVIRONMENT_SESSION_COLUMNS = (
+    "env_timestamp", "env_time_from_session_start_seconds", "env_match_status",
 )
 
 
@@ -48,6 +46,144 @@ def _normalise_subject(value: Any) -> str:
     subject = str(value).strip().lower()
     aliases = {str(key).lower(): str(val).lower() for key, val in settings.EVENT_SUBJECT_ALIASES.items()}
     return aliases.get(subject, subject)
+
+
+def _load_environment_data(village: int) -> pd.DataFrame | None:
+    """Load the consolidated sensor file for one village, if configured."""
+    directory_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
+    if directory_value is None:
+        return None
+    directory = Path(directory_value)
+    if not directory.is_dir():
+        LOGGER.warning("RV%s environment directory is unavailable: %s", village, directory)
+        return None
+    paths = sorted(directory.glob(f"environment_rv{village}_*.csv"))
+    if not paths:
+        LOGGER.warning(
+            "No merged environment file found for RV%s in %s; run merge_environment_files.py first.",
+            village, directory,
+        )
+        return None
+    if len(paths) != 1:
+        raise ValueError(
+            f"Expected one merged environment file for RV{village}, found {len(paths)}: "
+            f"{[path.name for path in paths]}"
+        )
+
+    path = paths[0]
+    frame = pd.read_csv(
+        path, sep=";", dtype="string", keep_default_na=False,
+        encoding="utf-8-sig", low_memory=False,
+    )
+    if frame.empty:
+        raise ValueError(f"Merged RV{village} environment file has no sensor rows: {path}")
+    frame.columns = [str(column).strip().lstrip("\ufeff") for column in frame.columns]
+    timestamp_columns = [column for column in frame if column.strip().lower() == "timestamp"]
+    if len(timestamp_columns) != 1:
+        raise ValueError(f"Merged RV{village} environment file must have one timestamp column: {path}")
+
+    # Physical temperature/humidity sensor columns are named with _C or _RH
+    # suffixes. control_C is a setpoint, not a sensor reading.
+    sensor_columns = [
+        column for column in frame.columns
+        if re.search(r"_(?:C|RH)$", column, flags=re.IGNORECASE)
+        and column.casefold() != "control_c"
+    ]
+    if not sensor_columns:
+        raise ValueError(f"No temperature or humidity sensor columns found in {path}.")
+
+    timestamp_column = timestamp_columns[0]
+    frame["__env_time_utc"] = _parse_local_times(
+        frame[timestamp_column], settings.ENVIRONMENT_TIMEZONE
+    )
+    invalid = frame["__env_time_utc"].isna()
+    if invalid.any():
+        examples = frame.loc[invalid, timestamp_column].head(5).tolist()
+        raise ValueError(
+            f"Merged RV{village} environment file has {int(invalid.sum())} invalid timestamps; "
+            f"examples={examples}"
+        )
+    for column in sensor_columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.sort_values("__env_time_utc", kind="stable").reset_index(drop=True)
+
+
+def _attach_environment_to_sessions(sessions: pd.DataFrame) -> pd.DataFrame:
+    """Choose the nearest consolidated sensor row once for each session."""
+    result = sessions.copy()
+    sensor_data = {village: _load_environment_data(village) for village in (1, 2, 3)}
+    sensor_columns_by_village = {
+        village: [
+            column for column in frame.columns
+            if re.search(r"_(?:C|RH)$", column, flags=re.IGNORECASE)
+            and column.casefold() != "control_c"
+        ] if frame is not None else []
+        for village, frame in sensor_data.items()
+    }
+    environment_output_columns = list(ENVIRONMENT_SESSION_COLUMNS)
+    for columns in sensor_columns_by_village.values():
+        for column in columns:
+            output_column = f"env_{column}"
+            if output_column not in environment_output_columns:
+                environment_output_columns.append(output_column)
+
+    if result.empty:
+        for column in environment_output_columns:
+            if column == "env_timestamp":
+                result[column] = pd.Series(dtype="datetime64[ns, UTC]")
+            elif column == "env_time_from_session_start_seconds" or (
+                column.startswith("env_") and column != "env_match_status"
+            ):
+                result[column] = pd.Series(dtype="float64")
+            else:
+                result[column] = pd.Series(dtype="string")
+        return result
+
+    result["env_timestamp"] = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns, UTC]")
+    result["env_time_from_session_start_seconds"] = np.nan
+    result["env_match_status"] = "no_environment_file"
+    for columns in sensor_columns_by_village.values():
+        for column in columns:
+            result[f"env_{column}"] = np.nan
+
+    if "ratvillage" not in result or "datetime_start_session" not in result:
+        return result
+
+    for village, frame in sensor_data.items():
+        if frame is None:
+            continue
+        session_indices = result.index[result["ratvillage"].eq(village)]
+        if len(session_indices) == 0:
+            continue
+        starts = pd.to_datetime(result.loc[session_indices, "datetime_start_session"], utc=True, errors="coerce")
+        valid = starts.notna()
+        result.loc[session_indices[~valid], "env_match_status"] = "invalid_session_start"
+        if not valid.any():
+            continue
+
+        valid_indices = session_indices[valid.to_numpy()]
+        start_ns = starts.loc[valid_indices].array.asi8
+        environment_ns = frame["__env_time_utc"].array.asi8
+        right = np.searchsorted(environment_ns, start_ns, side="left")
+        left = np.clip(right - 1, 0, len(environment_ns) - 1)
+        right_clipped = np.clip(right, 0, len(environment_ns) - 1)
+        left_distance = np.abs(start_ns - environment_ns[left])
+        right_distance = np.abs(environment_ns[right_clipped] - start_ns)
+        # Ties use the earlier reading for deterministic matching.
+        choose_right = right_distance < left_distance
+        nearest = np.where(choose_right, right_clipped, left)
+
+        result.loc[valid_indices, "env_timestamp"] = pd.to_datetime(
+            environment_ns[nearest], utc=True
+        )
+        result.loc[valid_indices, "env_time_from_session_start_seconds"] = (
+            environment_ns[nearest] - start_ns
+        ) / 1e9
+        result.loc[valid_indices, "env_match_status"] = "matched"
+        for column in sensor_columns_by_village[village]:
+            result.loc[valid_indices, f"env_{column}"] = frame[column].iloc[nearest].to_numpy()
+        LOGGER.info("RV%s environment readings matched to %s sessions.", village, len(valid_indices))
+    return result
 
 
 def _load_events() -> pd.DataFrame:
@@ -208,25 +344,32 @@ def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _attach_sessions(data: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+def _attach_sessions(data: pd.DataFrame, sessions: pd.DataFrame, has_events: bool) -> pd.DataFrame:
     if "ratvillage" not in data or "subject" not in data or "datetime" not in data:
         raise ValueError("Session matching requires 'ratvillage', 'subject', and 'datetime' columns.")
-    collisions = set(SESSION_OUTPUT_COLUMNS).intersection(data.columns)
+    output_columns = [
+        column for column in sessions.columns
+        if column not in ("ratvillage", "subject_match") and not column.startswith("_")
+    ]
+    collisions = set(output_columns).intersection(data.columns)
     if collisions:
         raise ValueError(f"Session output columns already exist: {sorted(collisions)}")
     result = data.copy()
-    for column in SESSION_OUTPUT_COLUMNS:
+    for column in output_columns:
         if column in ("datetime_start_session", "datetime_end_session"):
             result[column] = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns, UTC]")
-        elif column in ("event_temperature", "event_humidity"):
+        elif column in ("event_temperature", "event_humidity", "env_time_from_session_start_seconds") or (
+            column.startswith("env_") and column not in ("env_match_status", "env_timestamp")
+        ):
             result[column] = np.nan
+        elif column == "env_timestamp":
+            result[column] = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns, UTC]")
         else:
             result[column] = pd.NA
-    if events.empty:
+    if not has_events:
         result["event_session_status"] = "no_event_files"
         return result
 
-    sessions = _build_sessions(events)
     if sessions.empty:
         result["event_session_status"] = "no_animal_start_events"
         return result
@@ -265,18 +408,21 @@ def _attach_sessions(data: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
         if len(chosen_rows) == 0:
             continue
         chosen_sessions = candidates.iloc[selected[valid]]
-        for column in SESSION_OUTPUT_COLUMNS:
+        for column in output_columns:
             result.loc[chosen_rows, column] = chosen_sessions[column].to_numpy()
     return result
 
 
 def enrich_trial_data(data: pd.DataFrame) -> pd.DataFrame:
-    """Attach event-derived session windows and one sensor pair per session.
+    """Attach event timings and one nearest environment sample per session.
 
     Every source trial row and original source column is retained. Event files
     are associated with a village in settings.py; file names do not need an
-    ``_rvN`` suffix. Configured environment workbooks are intentionally not
-    read by this step.
+    ``_rvN`` suffix. The consolidated environment CSV is loaded separately for
+    each village, and its closest timestamp to each session start supplies all
+    configured temperature and humidity sensor columns for that session.
     """
     events = _load_events()
-    return _attach_sessions(data, events)
+    sessions = _build_sessions(events)
+    sessions = _attach_environment_to_sessions(sessions)
+    return _attach_sessions(data, sessions, has_events=not events.empty)
