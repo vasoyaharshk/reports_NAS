@@ -14,17 +14,17 @@ import settings
 
 
 def read_sorted_data(path: Path | None = None) -> pd.DataFrame:
-    """Read the complete, semicolon-delimited output from data_sorting.py."""
+    """Read the complete, semicolon-delimited output from prepare_data.py."""
     source = Path(path or (Path(settings.OUTPUT_DIRECTORY) / settings.OUTPUT_FILENAME))
     if not source.is_file():
         raise FileNotFoundError(
-            f"Sorted data not found: {source}. Run main.py or data_sorting.py first."
+            f"Prepared data not found: {source}. Run main.py or prepare_data.py first."
         )
     return pd.read_csv(source, sep=settings.CSV_SEPARATOR, low_memory=False)
 
 
 def task_family(data: pd.DataFrame, family: str) -> pd.DataFrame:
-    """Select task rows using the category assigned by data_sorting.py."""
+    """Select task rows using the category assigned by prepare_data.py."""
     if "task_category" in data.columns:
         return data.loc[data["task_category"].eq(family)].copy()
     # Keep report modules usable with older sorted files.
