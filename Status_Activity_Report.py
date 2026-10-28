@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import textwrap
 from typing import Any
 
 import matplotlib
@@ -136,18 +137,45 @@ def _draw_status_pages(pdf: PdfPages, status: pd.DataFrame) -> None:
         plt.close(fig)
         return
     page_size = 24
+    display_headers = {
+        "ratvillage": "Village", "subject": "Subject", "task": "Task",
+        "stage": "Stage", "substage": "Substage", "block_number": "Block",
+        "block_accuracy": "Block acc.", "current_ror": "Current ROR",
+        "trial_counter_ror": "ROR counter", "total_trials": "Total trials",
+        "block_number_task": "Task block", "N_trials_block": "Block N",
+        "N_trials_stage": "Stage N", "N_trials_substage": "Sub-N",
+    }
+    column_widths = [0.045, 0.07, 0.20, 0.045, 0.06, 0.055, 0.075,
+                     0.075, 0.075, 0.065, 0.065, 0.065, 0.065, 0.04]
     for page_num, start in enumerate(range(0, len(status), page_size), start=1):
         subset = status.iloc[start:start + page_size].copy().fillna("—")
+        subset["task"] = subset["task"].astype(str).map(
+            lambda value: "\n".join(textwrap.wrap(value, width=25, break_long_words=True, break_on_hyphens=False))
+        )
+        for column in ("block_accuracy", "current_ror"):
+            subset[column] = pd.to_numeric(subset[column], errors="coerce").map(
+                lambda value: "—" if pd.isna(value) else f"{value:.3f}"
+            )
+        for column in ("trial_counter_ror", "total_trials", "block_number_task",
+                       "N_trials_block", "N_trials_stage", "N_trials_substage"):
+            subset[column] = pd.to_numeric(subset[column], errors="coerce").map(
+                lambda value: "—" if pd.isna(value) else str(int(value))
+            )
         fig, ax = plt.subplots(figsize=(16.5, 11.7))
         ax.axis("off")
-        ax.set_title("Latest Training Status — All Rat Villages", fontsize=17, weight="bold", pad=24)
-        ax.text(0.5, 1.005, f"Rows {start + 1}–{start + len(subset)} of {len(status)} · Page {page_num}",
+        ax.set_title("Latest Training Status - All Rat Villages", fontsize=17, weight="bold", pad=24)
+        ax.text(0.5, 1.005, f"Rows {start + 1}-{start + len(subset)} of {len(status)} · Page {page_num}",
                 ha="center", va="bottom", fontsize=9, transform=ax.transAxes)
-        table = ax.table(cellText=subset.astype(str).values, colLabels=subset.columns,
-                         cellLoc="center", colLoc="center", loc="center")
+        if start == 0 and getattr(settings, "REPORT_DATA_NOTE", ""):
+            ax.text(0.5, 0.97, settings.REPORT_DATA_NOTE, ha="center", va="top",
+                    fontsize=9, color="#9a3412", transform=ax.transAxes)
+        table = ax.table(cellText=subset.astype(str).values,
+                         colLabels=[display_headers[column] for column in subset.columns],
+                         colWidths=column_widths, cellLoc="center", colLoc="center",
+                         bbox=[0.02, 0.10, 0.96, 0.70])
         table.auto_set_font_size(False)
-        table.set_fontsize(7)
-        table.scale(1, 1.5)
+        table.set_fontsize(6.5)
+        table.scale(1, 1.45)
         for (row, _), cell in table.get_celld().items():
             if row == 0:
                 cell.set_facecolor("#214761")
