@@ -25,7 +25,7 @@ VILLAGE_INPUTS = {
     },
 }
 
-# Task switches: True generates that task-family report.
+# Task switches: True includes that task family in the sorted output.
 Working_Memory = False
 Probability = True
 Cognitive_bias = True
@@ -69,14 +69,12 @@ EVENT_FILES = {
     3: [],
 }
 
+# Reserved for a later step. Environment workbooks are not read or matched yet.
 ENVIRONMENT_FILES = {
     1: [],
-    2: [],  # Example: [Path("/nas/RV2/environment_consolidated.xlsx")]
+    2: [],
     3: [],
 }
-ENVIRONMENT_SHEET = "Environment"
-ENVIRONMENT_TIMEZONE = "Europe/Madrid"  # Excel timestamps have no timezone metadata.
-ENVIRONMENT_MAX_GAP_SECONDS = 15
 
 # Academy event dates are written by datetime.now() as local wall time
 # (YYYY/MM/DD HH:MM:SS), without a UTC offset.
