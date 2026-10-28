@@ -18,9 +18,9 @@ python -m pip install pandas openpyxl matplotlib
 python main.py
 ```
 
-`main.py` sorts and saves the complete cleaned dataset first, then calls the early-training, Working Memory, Cognitive Bias, Probability, and trials-per-task modules in sequence.
+`main.py` sorts and saves the complete cleaned dataset first, then calls the early-training, Working Memory, Cognitive Bias, Probability, trials-per-task, and period-comparison modules in sequence.
 
-The task switches affect only the three task-specific reports. `Trials_Per_Task.py` always uses the complete sorted data, regardless of those switches, and writes both `Trials_Per_Task_Report.pdf` and `Trials_Per_Task_Daily.csv`. PDFs are saved in `REPORT_DIRECTORY`.
+The task switches affect only the three task-specific reports. `Trials_Per_Task.py` and `Period_Comparison.py` always use the complete sorted data, regardless of those switches. The trials module writes `Trials_Per_Task_Report.pdf` and `Trials_Per_Task_Daily.csv`. The period-comparison module writes `RV2_RV3_Trials_Sessions_By_Period.xlsx`, with village and subject comparison sheets. Its periods, session ID column, and timezone are configurable in `settings.py`; period boundaries use Europe/Madrid time by default. PDFs and workbooks are saved in `REPORT_DIRECTORY`.
 
 The task reports currently use a shared layout: a task overview page followed by village pages showing valid trials per session and mean session accuracy. This gives each category its own module and PDF so that its plots can be refined independently. The attached R file does not contain a Working Memory plotting section, so the first Working Memory PDF uses the shared summary layout and the configured Working Memory task rows.
 
