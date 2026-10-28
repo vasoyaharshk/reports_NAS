@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/sample-report-preview.yml
       - prepare_data.py
+      - Status_Activity_Report.py
   workflow_dispatch:
 permissions:
   contents: read
