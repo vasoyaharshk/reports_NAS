@@ -1,4 +1,4 @@
-"""Run sorting and then generate the configured report files."""
+"""Prepare the trial dataset and generate the configured report files."""
 from __future__ import annotations
 
 import logging
@@ -11,16 +11,14 @@ import Probability
 import Trials_Per_Task
 import Working_Memory_Report
 import settings
-from data_enrichment import enrich_trial_data
-from data_sorting import sort_trial_data
+from prepare_data import prepare_data
 
 LOGGER = logging.getLogger("reports_nas")
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    data = sort_trial_data(apply_filters=False)
-    data = enrich_trial_data(data)
+    data = prepare_data(apply_filters=False)
     output_dir = Path(settings.OUTPUT_DIRECTORY)
     output_dir.mkdir(parents=True, exist_ok=True)
     sorted_path = output_dir / settings.OUTPUT_FILENAME
