@@ -1055,7 +1055,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / settings.OUTPUT_FILENAME
     data.to_csv(output_path, sep=settings.CSV_SEPARATOR, index=False, encoding="utf-8-sig")
-    LOGGER.info("Saved %s rows and %s columns to %s", len(data), len(data.columns), output_path)
+    LOGGER.info("Saved prepared data with %s rows and %s columns to %s", len(data), len(data.columns), output_path)
 
 
 if __name__ == "__main__":
