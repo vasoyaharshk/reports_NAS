@@ -48,6 +48,10 @@ CSV_SEPARATOR = ";"
 # PDF and daily trials-per-task output location.
 REPORT_DIRECTORY = Path("/path/to/reports_NAS/reports")
 TRIALS_REPORT_DAYS = 30
+# Number of most recent active trial dates to include per village in the
+# combined status/activity report.
+STATUS_REPORT_DAYS = 30
+REPORT_TIMEZONE = "Europe/Madrid"
 
 # RV2/RV3 before-and-after comparison, with boundaries in Europe/Madrid time.
 # Period starts are inclusive and ends are exclusive. The final None end means
