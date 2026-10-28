@@ -128,6 +128,31 @@ def recent_daily_village_metrics(data: pd.DataFrame, n_days: int) -> pd.DataFram
     return daily.loc[mask].sort_values(["ratvillage", "date", "task"], kind="stable").reset_index(drop=True)
 
 
+def recent_daily_subject_metrics(data: pd.DataFrame, n_days: int) -> pd.DataFrame:
+    """Count daily task trials for each subject in each village's latest dates."""
+    required = {"ratvillage", "subject", "task", "datetime", "trial_result"}
+    missing = sorted(required.difference(data.columns))
+    if missing:
+        raise ValueError(f"Subject activity report needs columns: {', '.join(missing)}")
+    frame = _date_and_time(data)
+    frame = frame.loc[frame["trial_result"].notna()].copy()
+    frame = frame.loc[frame["subject"].astype("string").str.lower().ne("joy")]
+    frame = frame.dropna(subset=["ratvillage", "subject", "_report_date", "_report_datetime", "task"])
+    if frame.empty:
+        return pd.DataFrame(columns=["ratvillage", "subject", "date", "task", "trials"])
+
+    daily = (frame.groupby(["ratvillage", "subject", "_report_date", "task"], dropna=False)
+             .size().rename("trials").reset_index().rename(columns={"_report_date": "date"}))
+    keep: dict[object, set[object]] = {}
+    for village, village_frame in daily.groupby("ratvillage", dropna=False):
+        dates = sorted(village_frame["date"].dropna().unique())
+        keep[village] = set(dates[-max(1, int(n_days)):])
+    mask = [date in keep[village] for village, date in zip(daily["ratvillage"], daily["date"])]
+    return daily.loc[mask].sort_values(
+        ["ratvillage", "subject", "date", "task"], kind="stable"
+    ).reset_index(drop=True)
+
+
 def _draw_status_pages(pdf: PdfPages, status: pd.DataFrame) -> None:
     if status.empty:
         fig, ax = plt.subplots(figsize=(11.7, 8.3))
@@ -219,6 +244,63 @@ def _draw_daily_village_pages(pdf: PdfPages, daily: pd.DataFrame) -> None:
         plt.close(fig)
 
 
+def _draw_daily_subject_pages(pdf: PdfPages, daily: pd.DataFrame) -> None:
+    """Add per-village daily trial charts faceted by individual subject."""
+    if daily.empty:
+        return
+    subjects_per_page = 6
+    for village, village_rows in daily.groupby("ratvillage", dropna=False, sort=True):
+        subjects = sorted(village_rows["subject"].dropna().astype(str).unique())
+        dates = sorted(village_rows["date"].dropna().unique())
+        tasks = sorted(village_rows["task"].dropna().astype(str).unique())
+        palette = plt.get_cmap("tab20", max(len(tasks), 1))
+        colors = {task: palette(index) for index, task in enumerate(tasks)}
+        for start in range(0, len(subjects), subjects_per_page):
+            chosen = subjects[start:start + subjects_per_page]
+            n_rows = max(1, (len(chosen) + 2) // 3)
+            fig, axes = plt.subplots(n_rows, 3, figsize=(14, max(4.8, 4.2 * n_rows)),
+                                     squeeze=False, sharex=False)
+            fig.suptitle(
+                f"Daily Trials by Subject · Rat Village {village} · Set {start // subjects_per_page + 1}",
+                fontsize=15, weight="bold",
+            )
+            x = np.arange(len(dates))
+            for index, subject in enumerate(chosen):
+                ax = axes[index // 3, index % 3]
+                subject_rows = village_rows.loc[village_rows["subject"].astype(str).eq(subject)]
+                pivot = subject_rows.pivot_table(
+                    index="date", columns="task", values="trials", aggfunc="sum", fill_value=0
+                ).reindex(dates, fill_value=0)
+                bottom = np.zeros(len(dates), dtype=float)
+                for task in tasks:
+                    values = pivot[task].to_numpy() if task in pivot else np.zeros(len(dates))
+                    ax.bar(x, values, bottom=bottom, width=0.82, color=colors[task], label=task)
+                    bottom += values
+                ax.set_title(subject, fontsize=10, weight="bold")
+                ax.set_ylabel("Trials")
+                ax.grid(axis="y", alpha=0.2)
+                tick_step = max(1, (len(dates) + 11) // 12)
+                tick_positions = list(range(0, len(dates), tick_step))
+                if dates and tick_positions[-1] != len(dates) - 1:
+                    tick_positions.append(len(dates) - 1)
+                ax.set_xticks(tick_positions)
+                ax.set_xticklabels(
+                    [pd.Timestamp(dates[position]).strftime("%d %b") for position in tick_positions],
+                    rotation=60, ha="right", fontsize=6,
+                )
+            for index in range(len(chosen), n_rows * 3):
+                axes[index // 3, index % 3].set_visible(False)
+            handles, labels = axes[0, 0].get_legend_handles_labels()
+            if handles:
+                fig.legend(handles, labels, title="Task", loc="upper center", ncol=min(5, len(labels)),
+                           bbox_to_anchor=(0.5, 0.94), fontsize=7)
+            fig.text(0.01, 0.01, "Each panel shows daily trials for one rat; bars are stacked by task.",
+                     fontsize=8, color="#555555")
+            fig.tight_layout(rect=(0, 0.04, 1, 0.90))
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+
 def _cb_dataset(data: pd.DataFrame, task_name: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     frame = data.copy()
     task = frame["task"].astype("string")
@@ -266,6 +348,46 @@ def _cb_dataset(data: pd.DataFrame, task_name: str) -> tuple[pd.DataFrame, pd.Da
     return frame, counts, lines
 
 
+def _cb_facet_summaries(task_frame: pd.DataFrame) -> pd.DataFrame:
+    """Build the trial-count and date annotations used above each CB facet."""
+    free = task_frame.loc[task_frame["_fc"].eq(0)].copy()
+    if free.empty:
+        return pd.DataFrame(columns=["subject", "group_pair_label", "label"])
+    if "datetime" in free:
+        timestamps = pd.to_datetime(free["datetime"], utc=True, errors="coerce")
+        free["_cb_date"] = timestamps.dt.tz_convert(
+            getattr(settings, "REPORT_TIMEZONE", "Europe/Madrid")
+        ).dt.date
+    elif "date" in free:
+        free["_cb_date"] = pd.to_datetime(free["date"], errors="coerce").dt.date
+    else:
+        free["_cb_date"] = pd.NaT
+    free["_cb_tone"] = free["tone_played"].astype("string").str.lower()
+    keys = ["subject", "group", "pair"]
+    summary = free.groupby(keys, dropna=False).agg(
+        total_free=("trial_result", "size"),
+        low_n=("_cb_tone", lambda values: values.eq("low").sum()),
+        high_n=("_cb_tone", lambda values: values.eq("high").sum()),
+        days=("_cb_date", "nunique"),
+        first_date=("_cb_date", "min"),
+        last_date=("_cb_date", "max"),
+    ).reset_index()
+    summary["group_pair_label"] = (
+        "Group " + summary["group"].astype("string") + " | Pair " + summary["pair"].astype("string")
+    )
+
+    def date_label(value: object) -> str:
+        return "—" if pd.isna(value) else pd.Timestamp(value).strftime("%m-%d")
+
+    summary["label"] = summary.apply(
+        lambda row: (
+            f"N={int(row['total_free'])}  Low={int(row['low_n'])}  High={int(row['high_n'])}\n"
+            f"Days={int(row['days'])}  First={date_label(row['first_date'])}  Last={date_label(row['last_date'])}"
+        ), axis=1,
+    )
+    return summary
+
+
 def _draw_cb_pages(pdf: PdfPages, data: pd.DataFrame) -> None:
     if not bool(getattr(settings, "Cognitive_bias", True)) or "task" not in data:
         return
@@ -281,6 +403,7 @@ def _draw_cb_pages(pdf: PdfPages, data: pd.DataFrame) -> None:
         task_frame, summary, lines = _cb_dataset(frame.loc[pd.to_numeric(frame["ratvillage"], errors="coerce").eq(village)], task_name)
         if summary.empty:
             continue
+        facet_summaries = _cb_facet_summaries(task_frame)
         subjects = sorted(summary["subject"].dropna().astype(str).unique())
         subjects = [subject for subject in subjects if subject.lower() not in excluded]
         if selected is not None:
@@ -312,11 +435,22 @@ def _draw_cb_pages(pdf: PdfPages, data: pd.DataFrame) -> None:
                             linestyle="dotted", marker="o", label="Outside %")
                     ax.axhline(0.7, color="#444444", linewidth=0.8)
                     ax.axhline(0.5, color="#777777", linewidth=0.8, linestyle="dotted")
-                    ax.set_ylim(0, 1)
+                    # Reserve a narrow annotation band above the 0-100% data area.
+                    ax.set_ylim(0, 1.28)
                     ax.set_yticks(np.arange(0, 1.01, 0.2), labels=[f"{int(v*100)}%" for v in np.arange(0, 1.01, 0.2)])
                     ax.set_xticks(x, [str(block) for block in blocks], rotation=90, fontsize=7)
                     ax.grid(axis="y", alpha=0.2)
                     ax.set_title(subject if row_idx == 0 else "", fontsize=10)
+                    annotation = facet_summaries.loc[
+                        facet_summaries["subject"].astype(str).eq(subject)
+                        & facet_summaries["group_pair_label"].astype(str).eq(facet), "label"
+                    ]
+                    if not annotation.empty:
+                        ax.text(
+                            0.02, 0.98, annotation.iloc[0], transform=ax.transAxes,
+                            ha="left", va="top", fontsize=6.5,
+                            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 2},
+                        )
                     if col_idx == 0:
                         ax.set_ylabel(f"{facet}\nProportion", fontsize=8)
                     if row_idx == len(facets) - 1:
@@ -336,8 +470,10 @@ def generate(data: pd.DataFrame) -> Path:
     output_path = output_dir / "Status_and_Activity_Report.pdf"
     status = latest_status_table(data)
     daily = recent_daily_village_metrics(data, getattr(settings, "STATUS_REPORT_DAYS", 30))
+    daily_subject = recent_daily_subject_metrics(data, getattr(settings, "STATUS_REPORT_DAYS", 30))
     with PdfPages(output_path) as pdf:
         _draw_status_pages(pdf, status)
         _draw_daily_village_pages(pdf, daily)
+        _draw_daily_subject_pages(pdf, daily_subject)
         _draw_cb_pages(pdf, data)
     return output_path
