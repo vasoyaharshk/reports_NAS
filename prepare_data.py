@@ -40,17 +40,59 @@ def _read_source(path: Path, village: int, dataset: str) -> pd.DataFrame:
     return frame
 
 
+def _source_column_class(column: pd.Series) -> str:
+    """Approximate the read.csv classes used by the R type-harmonising step."""
+    if pd.api.types.is_bool_dtype(column.dtype):
+        return "logical"
+    if pd.api.types.is_integer_dtype(column.dtype):
+        return "integer"
+    if pd.api.types.is_float_dtype(column.dtype):
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(column.dtype):
+        return "datetime"
+    return "character"
+
+
+def _r_as_character(values: pd.Series) -> pd.Series:
+    """Render numeric values like R's as.character(), without float .0 suffixes."""
+    if pd.api.types.is_numeric_dtype(values.dtype):
+        def format_value(value: Any) -> Any:
+            if pd.isna(value):
+                return pd.NA
+            number = float(value)
+            return str(int(number)) if number.is_integer() else format(number, ".15g")
+
+        return values.map(format_value).astype("string")
+    return values.astype("string")
+
+
+def _harmonise_source_types(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """Convert columns with differing source types to text, as the R script does."""
+    columns = list(dict.fromkeys(column for frame in frames for column in frame.columns))
+    for column in columns:
+        present = [frame for frame in frames if column in frame.columns]
+        classes = {_source_column_class(frame[column]) for frame in present}
+        if len(classes) > 1:
+            for frame in present:
+                frame[column] = frame[column].astype("string")
+    return frames
+
+
 def load_all_villages() -> pd.DataFrame:
     """Load the early-training and global-trial exports for RV1–RV3."""
     frames: list[pd.DataFrame] = []
     expected = {"early_training", "global_trials_pi"}
-    for village in (1, 2, 3):
-        inputs = settings.VILLAGE_INPUTS.get(village)
-        if not inputs or not expected.issubset(inputs):
-            raise ValueError(
-                f"VILLAGE_INPUTS[{village}] must define {sorted(expected)}."
-            )
-        for dataset in ("early_training", "global_trials_pi"):
+    source_order = (
+        ("early_training", (3, 2, 1)),
+        ("global_trials_pi", (1, 2, 3)),
+    )
+    for dataset, villages in source_order:
+        for village in villages:
+            inputs = settings.VILLAGE_INPUTS.get(village)
+            if not inputs or not expected.issubset(inputs):
+                raise ValueError(
+                    f"VILLAGE_INPUTS[{village}] must define {sorted(expected)}."
+                )
             frames.append(_read_source(Path(inputs[dataset]), village, dataset))
 
     # Include RV1 Working Memory whenever its source exists, even if the
@@ -64,6 +106,9 @@ def load_all_villages() -> pd.DataFrame:
             "Working_Memory is enabled, but its RV1 source is missing. Set the working_memory path in settings.py."
         )
 
+    # R's compare_column_types()/harmonise_column_types() convert columns with
+    # inconsistent source types to character before bind_rows().
+    frames = _harmonise_source_types(frames)
     # sort=False preserves source column order and adds columns present in other files.
     combined = pd.concat(frames, ignore_index=True, sort=False)
     return combined
@@ -163,26 +208,30 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
         valid = data["stage"].notna() & data["substage"].notna()
         data["stage_substage"] = pd.NA
         data.loc[valid, "stage_substage"] = (
-            data.loc[valid, "stage"].astype(str) + "." + data.loc[valid, "substage"].astype(str)
+            _r_as_character(data.loc[valid, "stage"])
+            + "." + _r_as_character(data.loc[valid, "substage"])
         )
 
     if {"stage", "substage"}.issubset(data.columns):
         valid = data["stage"].notna() & data["substage"].notna()
         data["stage_substage_bias"] = pd.NA
-        values = data.loc[valid, "stage"].astype(str) + "." + data.loc[valid, "substage"].astype(str)
+        values = (
+            _r_as_character(data.loc[valid, "stage"])
+            + "." + _r_as_character(data.loc[valid, "substage"])
+        )
         if "substage_bias" in data.columns:
             bias_valid = valid & data["substage_bias"].notna()
             data.loc[valid, "stage_substage_bias"] = values
             data.loc[bias_valid, "stage_substage_bias"] = (
-                data.loc[bias_valid, "stage"].astype(str)
-                + "." + data.loc[bias_valid, "substage"].astype(str)
-                + "." + data.loc[bias_valid, "substage_bias"].astype(str)
+                _r_as_character(data.loc[bias_valid, "stage"])
+                + "." + _r_as_character(data.loc[bias_valid, "substage"])
+                + "." + _r_as_character(data.loc[bias_valid, "substage_bias"])
             )
         else:
             data.loc[valid, "stage_substage_bias"] = values
 
     if "trial_result" in data.columns:
-        result = data["trial_result"].astype("string").str.lower()
+        result = data["trial_result"].astype("string")
         data["success"] = pd.Series(pd.NA, index=data.index, dtype="Int64")
         valid = result.notna()
         data.loc[valid, "success"] = result.loc[valid].isin(["correct_first", "correct"]).astype(int)
@@ -197,6 +246,9 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
                 numeric_date.loc[epoch_mask], unit="s", origin="unix", errors="coerce"
             )
         data["date"] = parsed_date.dt.date
+        data["date_short"] = (
+            data["date"].astype("string").str.replace("2024-", "", regex=False)
+        )
 
     if {"task", "date"}.issubset(data.columns):
         years = pd.to_datetime(data["date"], errors="coerce").dt.year
@@ -205,9 +257,12 @@ def _add_core_fields(data: pd.DataFrame) -> pd.DataFrame:
         data.loc[is_weber & years.ne(2025), "task"] = "Probability_WebersLaw_Pilot"
 
     if {"current_condition", "trial_condition"}.intersection(data.columns):
-        current = pd.to_numeric(data.get("current_condition", pd.Series(pd.NA, index=data.index)), errors="coerce")
-        trial = pd.to_numeric(data.get("trial_condition", pd.Series(pd.NA, index=data.index)), errors="coerce")
-        condition = current.combine_first(trial)
+        current_raw = data.get("current_condition", pd.Series(pd.NA, index=data.index))
+        trial_raw = data.get("trial_condition", pd.Series(pd.NA, index=data.index))
+        current = pd.to_numeric(current_raw, errors="coerce")
+        trial = pd.to_numeric(trial_raw, errors="coerce")
+        has_current = current_raw.notna()
+        condition = current.where(has_current, trial)
         data["condition_type"] = pd.Series(pd.NA, index=data.index, dtype="string")
         valid = condition.notna()
         data.loc[valid & condition.mod(2).eq(0), "condition_type"] = "big"
@@ -268,7 +323,7 @@ def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
                 return float("nan")
 
         data["lastresponse"] = data["response_x"].map(last_response)
-        is_miss = data["trial_result"].astype("string").str.lower().eq("miss")
+        is_miss = data["trial_result"].astype("string").eq("miss")
         data.loc[is_miss, "lastresponse"] = float("nan")
         data["response_side"] = "miss"
         valid = data["lastresponse"].notna() & ~is_miss
@@ -276,7 +331,7 @@ def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
         data.loc[valid & (data["lastresponse"] >= 200), "response_side"] = "right"
 
     correct_column = "correct_th_pos" if "correct_th_pos" in data.columns else "correct_th"
-    grouping = [column for column in ("ratvillage", "subject", "task", "stage_substage", "session") if column in data.columns]
+    grouping = [column for column in ("subject", "task", "stage_substage", "session") if column in data.columns]
     if correct_column in data.columns and grouping:
         numeric = pd.to_numeric(data[correct_column], errors="coerce")
         grouped = data.assign(_correct_numeric=numeric).groupby(grouping, dropna=False)["_correct_numeric"]
@@ -290,9 +345,11 @@ def _add_response_fields(data: pd.DataFrame) -> pd.DataFrame:
 
 def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
     data = data.copy()
-    group_columns = [column for column in ("ratvillage", "subject", "session") if column in data.columns]
     if {"subject", "session", "datetime", "datetime_end"}.issubset(data.columns):
-        grouped = data.dropna(subset=["subject", "session"]).groupby(group_columns, dropna=False)
+        # The R workflow identifies source sessions by subject and session ID.
+        grouped = data.dropna(subset=["subject", "session"]).groupby(
+            ["subject", "session"], dropna=False
+        )
         starts = grouped["datetime"].transform("min")
         ends = grouped["datetime_end"].transform("max")
         duration = (ends - starts).dt.total_seconds() / 60
@@ -310,7 +367,11 @@ def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
     required = {"task", "forced_choice_actual_trial", "subject", "session"}
     if required.issubset(data.columns):
         data["forced_choice_actual_trial"] = pd.to_numeric(data["forced_choice_actual_trial"], errors="coerce")
-        group_columns = [column for column in ("ratvillage", "subject", "group", "pair", "task") if column in data.columns]
+        for column in ("block_number", "block_trial_counter", "block_size"):
+            if column in data.columns:
+                data[column] = pd.to_numeric(data[column], errors="coerce")
+        group_columns = [column for column in ("subject", "group", "pair", "task") if column in data.columns]
+        data["free_choice_trial_index_60"] = pd.Series(pd.NA, index=data.index, dtype="Int64")
         for source_task, output_task in (
             ("Cognitive_Bias_Auditory_Training", "Cognitive_Bias_Auditory_Training_60R"),
             ("Cognitive_Bias_Auditory_Training_PR", "Cognitive_Bias_Auditory_Training_PR_60R"),
@@ -318,11 +379,15 @@ def _add_session_fields(data: pd.DataFrame) -> pd.DataFrame:
             selected = data["task"].eq(source_task)
             free_choice = selected & data["forced_choice_actual_trial"].eq(0)
             if not free_choice.any():
+                data.loc[selected, "block_size"] = 60
+                data.loc[selected, "task"] = output_task
                 continue
             ordered = data.loc[free_choice]
-            sort_columns = group_columns + (["datetime"] if "datetime" in data.columns else [])
-            order = ordered.sort_values(sort_columns, kind="stable", na_position="last").index
+            # dplyr::cumsum() follows the existing row order within each group.
+            order = ordered.index
             block_index = data.loc[order].groupby(group_columns, dropna=False).cumcount() + 1
+            if source_task == "Cognitive_Bias_Auditory_Training_PR":
+                data.loc[order, "free_choice_trial_index_60"] = block_index.to_numpy()
             data.loc[order, "block_number"] = ((block_index - 1) // 60 + 1).to_numpy()
             data.loc[order, "block_trial_counter"] = ((block_index - 1) % 60 + 1).to_numpy()
             data.loc[selected, "block_size"] = 60
@@ -344,20 +409,24 @@ def _apply_cb_half_screen_correction(data: pd.DataFrame) -> pd.DataFrame:
         "Cognitive_Bias_Auditory_Training_60_PR",
     }
     use = data["ratvillage"].eq(2) & data["datetime"].lt(cutoff) & data["task"].isin(cb_tasks)
-    if not use.any():
-        return data
-
     for column in ("success", "trial_result", "reward"):
         if column in data.columns:
             data[f"{column}_original"] = data[column]
 
     response = pd.to_numeric(data["response_x"], errors="coerce")
+    data["use_half_screen_correction"] = use
+    data["response_x_half_numeric"] = response.where(use)
     response_side = pd.Series(pd.NA, index=data.index, dtype="string")
-    response_side.loc[use & response.lt(205)] = "left"
+    response_side.loc[use & response.notna() & response.lt(205)] = "left"
     response_side.loc[use & response.ge(205)] = "right"
-    correct_side = data["side"].astype("string").str.lower()
-    is_miss = data["trial_result"].astype("string").str.lower().eq("miss")
-    success = pd.Series(pd.NA, index=data.index, dtype="Float64")
+    data["response_side_half"] = response_side
+    data["side"] = data["side"].astype("string").str.lower()
+    correct_side = data["side"].astype("string")
+    correct_side_half = correct_side.where(use)
+    data["correct_side_half"] = correct_side_half
+    is_miss = data["trial_result"].astype("string").eq("miss")
+    success = pd.to_numeric(data["success"], errors="coerce").astype("Float64")
+    success.loc[use] = pd.NA
     valid = use & ~is_miss & response_side.notna() & correct_side.notna()
     success.loc[valid] = response_side.loc[valid].eq(correct_side.loc[valid]).astype(int)
 
@@ -380,10 +449,8 @@ def _apply_cb_half_screen_correction(data: pd.DataFrame) -> pd.DataFrame:
         reward_half.loc[use & trial_result.eq("correct") & unrewarded.eq(1)] = 0
         data["reward_half"] = reward_half
         data["reward"] = reward_half
-    data["success"] = data.get("success", pd.Series(pd.NA, index=data.index)).astype("Float64")
-    data.loc[use, "success"] = success.loc[use]
-    data["trial_result"] = data["trial_result"].astype("string")
-    data.loc[use, "trial_result"] = trial_result.loc[use]
+    data["success"] = success
+    data["trial_result"] = trial_result
     return data
 
 
@@ -428,6 +495,13 @@ def _prepare_trial_table(apply_filters: bool = False) -> pd.DataFrame:
     data = _add_session_fields(data)
     data = _apply_cb_half_screen_correction(data)
     data = _add_inactive_hours(data)
+    # These fields are explicitly made numeric at the end of the R pipeline.
+    for column in (
+        "total_trials", "forced_choice_actual_trial", "block_number",
+        "block_accuracy", "current_ror", "trial_counter_ror", "stage", "substage",
+    ):
+        if column in data.columns:
+            data[column] = pd.to_numeric(data[column], errors="coerce")
     if "task" in data.columns:
         data["task_category"] = data["task"].map(_task_family)
     if apply_filters:
