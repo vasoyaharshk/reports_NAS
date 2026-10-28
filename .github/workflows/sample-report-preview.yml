@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/sample-report-preview.yml
+      - prepare_data.py
   workflow_dispatch:
 permissions:
   contents: read
