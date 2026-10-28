@@ -77,6 +77,7 @@ ENVIRONMENT_DIRECTORIES = {
     3: Path("/path/to/ratvillage3/environment"),
 }
 ENVIRONMENT_EXCEL_SHEET = "Environment"
+ENVIRONMENT_TIMEZONE = "Europe/Madrid"
 DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE = True
 
 # Academy event dates are written by datetime.now() as local wall time
