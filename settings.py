@@ -55,6 +55,8 @@ TRIALS_REPORT_DAYS = 30
 # combined status/activity report.
 STATUS_REPORT_DAYS = 30
 REPORT_TIMEZONE = "Europe/Madrid"
+# Optional note shown on report title pages, such as "Sampled rows only".
+REPORT_DATA_NOTE = ""
 
 # RV2/RV3 before-and-after comparison, with boundaries in Europe/Madrid time.
 # Period starts are inclusive and ends are exclusive. The final None end means
