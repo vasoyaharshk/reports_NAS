@@ -29,7 +29,7 @@ def _as_path_list(value: Any) -> list[Path]:
 
 
 def _parse_local_times(values: pd.Series, timezone: str) -> pd.Series:
-    """Parse naive Academy/Excel wall times in the configured local timezone."""
+    """Parse naive Academy wall times in the configured local timezone."""
     parsed = pd.to_datetime(values, errors="coerce", format="mixed")
     if parsed.dt.tz is None:
         # A repeated wall time during the autumn clock change cannot be
