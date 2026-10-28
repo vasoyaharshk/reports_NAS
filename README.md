@@ -35,4 +35,4 @@ The task reports currently use a shared layout: a task overview page followed by
 python prepare_data.py
 ```
 
-This writes the full semicolon-delimited `sorted_trials.csv`. It prepares the source files, parses timestamps, derives response and session fields, applies historical task-name corrections, recalculates 60-trial Cognitive Bias blocks, and applies the RV2 half-screen correction from the existing R workflow. Unknown task names remain available in the complete data and are marked `unclassified`.
+This writes the full semicolon-delimited `prepared_trial_data.csv`. It prepares the source files, parses timestamps, derives response and session fields, applies historical task-name corrections, recalculates 60-trial Cognitive Bias blocks, and applies the RV2 half-screen correction from the existing R workflow. Unknown task names remain available in the complete data and are marked `unclassified`.
