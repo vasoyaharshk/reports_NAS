@@ -6,6 +6,7 @@ from pathlib import Path
 
 import Cognitive_bias
 import Early_Training
+import Period_Comparison
 import Probability
 import Trials_Per_Task
 import Working_Memory_Report
@@ -33,7 +34,8 @@ def main() -> None:
         Probability.generate(data),
     ]
     trials_pdf, trials_csv = Trials_Per_Task.generate(data)
-    outputs.extend([trials_pdf, trials_csv])
+    period_workbook = Period_Comparison.generate(data)
+    outputs.extend([trials_pdf, trials_csv, period_workbook])
     for output in outputs:
         if output is not None:
             LOGGER.info("Generated %s", output)
