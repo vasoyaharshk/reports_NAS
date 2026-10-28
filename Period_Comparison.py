@@ -74,7 +74,7 @@ def _identify_columns(data: pd.DataFrame) -> tuple[str, str]:
 
 
 def _prepare_trials(data: pd.DataFrame, subject_column: str, session_column: str) -> pd.DataFrame:
-    # data_sorting.py writes these as UTC-aware timestamps. Parsing with utc=True
+    # prepare_data.py writes these as UTC-aware timestamps. Parsing with utc=True
     # preserves those instants and gives consistent comparisons with local bounds.
     timestamps = pd.to_datetime(data["datetime"], errors="coerce", utc=True)
     village_number = data["ratvillage"].astype("string").str.extract(r"(\d+)$", expand=False)
