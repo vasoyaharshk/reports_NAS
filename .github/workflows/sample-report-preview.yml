@@ -1,0 +1,68 @@
+name: Sample report preview
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/sample-report-preview.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install report dependencies
+        run: python -m pip install pandas numpy matplotlib openpyxl
+      - name: Reduce trial inputs to 10,000 rows each
+        run: |
+          python - <<'PY'
+          import csv
+          from itertools import islice
+          from pathlib import Path
+          paths = [
+              Path('Data/ratvilalge01/global_trials/global_trials_wm.csv'),
+              Path('Data/ratvilalge02/global_trials/early_training_rv2.csv'),
+              Path('Data/ratvilalge02/global_trials/global_trials_pi_rv2.csv'),
+              Path('Data/ratvillage03/global_trials/early_training_rv3.csv'),
+              Path('Data/ratvillage03/global_trials/global_trials_pi_rv3.csv'),
+          ]
+          for path in paths:
+              temp = path.with_name(path.name + '.sample_tmp')
+              with path.open('r', newline='', encoding='utf-8-sig') as source:
+                  reader = csv.reader(source, delimiter=';')
+                  header = next(reader)
+                  sample_rows = list(islice(reader, 10_000))
+              with temp.open('w', newline='', encoding='utf-8-sig') as target:
+                  writer = csv.writer(target, delimiter=';')
+                  writer.writerow(header)
+                  writer.writerows(sample_rows)
+              temp.replace(path)
+              print(f'{path}: {len(sample_rows):,} data rows')
+          PY
+      - name: Run report pipeline
+        run: |
+          python - <<'PY'
+          import settings
+          settings.REPORT_DATA_NOTE = 'PREVIEW ONLY: first 10,000 rows per trial source.'
+          settings.DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE = False
+          import main
+          main.main()
+          PY
+      - name: Save generated reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-report-preview
+          path: |
+            reports/Status_and_Activity_Report.pdf
+            reports/Trials_Per_Task_Report.pdf
+            reports/Trials_Per_Task_Daily.csv
+            reports/RV2_RV3_Trials_Sessions_By_Period.xlsx
+            output/prepared_trial_data.csv
+          if-no-files-found: error
+          retention-days: 7
