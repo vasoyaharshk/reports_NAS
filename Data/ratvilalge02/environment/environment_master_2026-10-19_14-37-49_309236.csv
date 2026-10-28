@@ -1,0 +1,9 @@
+timestamp;arduino_ms;reward_wall_C;reward_wall_RH;middle_box_C;middle_box_RH;screen_wall_C;screen_wall_RH;inside_cooler_C;inside_cooler_RH;room_C;room_RH;control_C;cooler_percent;mode;status
+2026-10-19 14:37:51;56;;;24.24;61.28;25.39;50.56;22.85;59.55;23.39;55.35;;0;manual;box_sensor_fault
+2026-10-19 14:37:55;5056;;;24.24;61.33;25.41;50.53;22.84;59.56;23.39;55.38;;0;manual;box_sensor_fault
+2026-10-19 14:38:00;10056;;;24.25;61.36;25.41;50.54;22.87;59.57;23.37;55.37;;0;manual;box_sensor_fault
+2026-10-19 14:38:05;15056;;;24.28;61.37;25.42;50.55;22.82;59.62;23.38;55.37;;0;manual;box_sensor_fault
+2026-10-19 14:38:10;20056;;;24.25;61.39;25.41;50.57;22.82;59.68;23.38;55.39;;0;manual;box_sensor_fault
+2026-10-19 14:38:15;25056;;;24.25;61.37;25.42;50.58;22.85;59.66;23.38;55.42;;0;manual;box_sensor_fault
+2026-10-19 14:38:20;30056;;;24.24;61.36;25.39;50.55;22.85;59.62;23.37;55.4;;0;manual;box_sensor_fault
+2026-10-19 14:38:25;35056;;;24.25;61.43;25.41;50.58;22.85;59.65;23.38;55.41;;0;manual;box_sensor_fault
