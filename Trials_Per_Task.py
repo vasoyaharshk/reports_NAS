@@ -1,5 +1,6 @@
 """Create task trial-count tables and a daily-count PDF from all sorted rows."""
 from pathlib import Path
+import textwrap
 
 import matplotlib
 matplotlib.use("Agg")
@@ -34,7 +35,11 @@ def generate(data: pd.DataFrame) -> tuple[Path, Path]:
         fig, ax = plt.subplots(figsize=(11.7, 8.3))
         ax.axis("off")
         ax.text(0.5, 0.95, "Trials per Task", ha="center", va="top", fontsize=20, weight="bold", transform=ax.transAxes)
-        ax.text(0.5, 0.89, f"All task families included · {len(data):,} sorted trial rows", ha="center", va="top", fontsize=10, transform=ax.transAxes)
+        note = getattr(settings, "REPORT_DATA_NOTE", "")
+        subtitle = f"All task families included · {len(data):,} sorted trial rows"
+        if note:
+            subtitle = f"{note} · {subtitle}"
+        ax.text(0.5, 0.89, subtitle, ha="center", va="top", fontsize=10, transform=ax.transAxes)
         if daily.empty:
             ax.text(0.5, 0.5, "No dated trial rows available.", ha="center", va="center", fontsize=13, transform=ax.transAxes)
         else:
@@ -43,10 +48,15 @@ def generate(data: pd.DataFrame) -> tuple[Path, Path]:
                 mean_trials_per_day=("trials", "mean"),
             ).reset_index().sort_values(["ratvillage", "task"])
             summary["mean_trials_per_day"] = summary["mean_trials_per_day"].round(1)
-            table = ax.table(cellText=summary.head(28).values, colLabels=summary.columns,
+            shown = summary.head(28).copy()
+            shown["task"] = shown["task"].astype(str).map(
+                lambda value: "\n".join(textwrap.wrap(value, width=58, break_long_words=True, break_on_hyphens=False))
+            )
+            table = ax.table(cellText=shown.values, colLabels=shown.columns,
+                             colWidths=[0.08, 0.53, 0.10, 0.14, 0.15],
                              cellLoc="center", colLoc="center", bbox=[0.05, 0.12, 0.9, 0.68])
             table.auto_set_font_size(False)
-            table.set_fontsize(8)
+            table.set_fontsize(7)
             if len(summary) > 28:
                 ax.text(0.05, 0.08, "First 28 village/task rows shown. Full totals are in the daily CSV.", fontsize=8, transform=ax.transAxes)
         pdf.savefig(fig, bbox_inches="tight")
