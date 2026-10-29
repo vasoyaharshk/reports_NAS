@@ -1143,6 +1143,256 @@ def _attach_sessions(data: pd.DataFrame, sessions: pd.DataFrame, has_events: boo
     return result
 
 
+EVENT_TRIAL_MATCH_TOLERANCE_MINUTES = 60
+ENTRY_EVENT_PATTERN = re.compile(
+    r"first action in box, closing door\s*\d+", re.IGNORECASE
+)
+EXIT_EVENT_PATTERN = re.compile(
+    r"opening door\s*\d+,\s*subject can leave", re.IGNORECASE
+)
+
+
+def _attach_entry_exit_times(data: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """Attach box door close/open actions to the matching trial session."""
+    result = data.copy()
+    utc_dtype = "datetime64[ns, UTC]"
+    result["entry_time"] = pd.Series(pd.NaT, index=result.index, dtype=utc_dtype)
+    result["exit_time"] = pd.Series(pd.NaT, index=result.index, dtype=utc_dtype)
+    result["time_spent_in_box"] = np.nan
+    result["entry_exit_match_status"] = "no_event_match"
+
+    required = {"ratvillage", "subject", "session", "datetime"}
+    event_required = {
+        "ratvillage", "event_time_utc", "event_type",
+        "event_description", "subject_match",
+    }
+    if not required.issubset(result.columns):
+        result["entry_exit_match_status"] = "missing_trial_session_fields"
+        return result
+    if not event_required.issubset(events.columns):
+        result["entry_exit_match_status"] = "invalid_event_columns"
+        return result
+
+    trial_start = pd.to_datetime(result["datetime"], errors="coerce", utc=True)
+    if "datetime_end" in result:
+        trial_end = pd.to_datetime(result["datetime_end"], errors="coerce", utc=True)
+    else:
+        trial_end = trial_start
+
+    group_columns = ["ratvillage", "subject", "session"]
+    if "task" in result.columns:
+        group_columns.append("task")
+    if "dataset" in result.columns:
+        group_columns.append("dataset")
+
+    valid_rows = (
+        result["ratvillage"].notna()
+        & result["subject"].notna()
+        & result["session"].notna()
+        & trial_start.notna()
+    )
+    result["_entry_exit_uid"] = pd.NA
+    result.loc[valid_rows, "_entry_exit_uid"] = (
+        result.loc[valid_rows].groupby(
+            group_columns, sort=False, dropna=False
+        ).ngroup().to_numpy()
+    )
+
+    session_rows = result.loc[valid_rows].copy()
+    session_rows["_trial_start_utc"] = trial_start.loc[valid_rows]
+    session_rows["_trial_end_utc"] = trial_end.loc[valid_rows]
+    summaries = (
+        session_rows.groupby("_entry_exit_uid", sort=False)
+        .agg(
+            ratvillage=("ratvillage", "first"),
+            subject=("subject", "first"),
+            first_trial=("_trial_start_utc", "min"),
+            last_trial_end=("_trial_end_utc", "max"),
+        )
+        .reset_index()
+    )
+    summaries["_village_key"] = pd.to_numeric(summaries["ratvillage"], errors="coerce")
+    summaries["_subject_key"] = summaries["subject"].map(_normalise_subject)
+    summaries["_last_trial_end"] = summaries["last_trial_end"].fillna(
+        summaries["first_trial"]
+    )
+
+    if summaries.empty:
+        result["entry_exit_match_status"] = "no_trial_sessions"
+        result.drop(columns=["_entry_exit_uid"], inplace=True)
+        return result
+
+    event_rows = events.copy()
+    event_rows["event_time_utc"] = pd.to_datetime(
+        event_rows["event_time_utc"], errors="coerce", utc=True
+    )
+    event_rows["event_type"] = (
+        event_rows["event_type"].astype("string").str.upper().str.strip()
+    )
+    event_rows["_village_key"] = pd.to_numeric(event_rows["ratvillage"], errors="coerce")
+    event_rows["_subject_key"] = event_rows["subject_match"].map(_normalise_subject)
+    description = event_rows["event_description"].astype("string").fillna("").str.strip()
+    event_rows["_door_event"] = pd.Series(pd.NA, index=event_rows.index, dtype="string")
+    entry_mask = (
+        event_rows["event_type"].eq("ACTION")
+        & description.str.contains(ENTRY_EVENT_PATTERN, na=False)
+    )
+    exit_mask = (
+        event_rows["event_type"].eq("ACTION")
+        & description.str.contains(EXIT_EVENT_PATTERN, na=False)
+    )
+    event_rows.loc[entry_mask, "_door_event"] = "entry"
+    event_rows.loc[exit_mask, "_door_event"] = "exit"
+
+    pseudo_subjects = {
+        _normalise_subject(value)
+        for value in getattr(settings, "EVENT_NON_ANIMAL_SUBJECTS", ())
+    }
+    valid_events = event_rows.loc[
+        event_rows["_door_event"].notna()
+        & event_rows["event_time_utc"].notna()
+        & event_rows["_subject_key"].notna()
+        & ~event_rows["_subject_key"].isin(pseudo_subjects)
+    ].copy()
+    if valid_events.empty:
+        result["entry_exit_match_status"] = "no_door_events"
+        result.drop(columns=["_entry_exit_uid"], inplace=True)
+        return result
+
+    tolerance = pd.Timedelta(minutes=EVENT_TRIAL_MATCH_TOLERANCE_MINUTES)
+    entry_by_uid: dict[int, pd.Timestamp] = {}
+    exit_by_uid: dict[int, pd.Timestamp] = {}
+    used_uids = {"entry": set(), "exit": set()}
+    unmatched = {"entry": 0, "exit": 0}
+
+    entry_events = valid_events.loc[valid_events["_door_event"].eq("entry")].sort_values(
+        "event_time_utc", kind="stable"
+    )
+    for _, event in entry_events.iterrows():
+        candidates = summaries.loc[
+            summaries["_village_key"].eq(event["_village_key"])
+            & summaries["_subject_key"].eq(event["_subject_key"])
+            & ~summaries["_entry_exit_uid"].isin(used_uids["entry"])
+        ]
+        if candidates.empty:
+            unmatched["entry"] += 1
+            continue
+        distance = (candidates["first_trial"] - event["event_time_utc"]).abs()
+        nearest = distance.sort_values(kind="stable").index[0]
+        if distance.loc[nearest] > tolerance:
+            unmatched["entry"] += 1
+            continue
+        uid = int(candidates.loc[nearest, "_entry_exit_uid"])
+        entry_by_uid[uid] = event["event_time_utc"]
+        used_uids["entry"].add(uid)
+
+    # Bound each box exit by the next door closing in that village.
+    entry_times_by_village = {
+        village: np.sort(group["event_time_utc"].array.asi8)
+        for village, group in entry_events.groupby("_village_key", sort=False)
+    }
+    exit_events = valid_events.loc[valid_events["_door_event"].eq("exit")].sort_values(
+        "event_time_utc", kind="stable"
+    )
+    exit_event_groups = {
+        (village, subject): group["event_time_utc"].array.asi8
+        for (village, subject), group in exit_events.groupby(
+            ["_village_key", "_subject_key"], sort=False
+        )
+    }
+
+    for (village, subject), subject_sessions in summaries.groupby(
+        ["_village_key", "_subject_key"], sort=False
+    ):
+        exit_ns = exit_event_groups.get((village, subject), np.array([], dtype=np.int64))
+        if len(exit_ns) == 0:
+            unmatched["exit"] += len(subject_sessions)
+            continue
+        all_entry_ns = entry_times_by_village.get(village, np.array([], dtype=np.int64))
+        used_positions = set()
+        subject_sessions = subject_sessions.sort_values(
+            "_last_trial_end", kind="stable"
+        )
+        for _, session in subject_sessions.iterrows():
+            uid = int(session["_entry_exit_uid"])
+            trial_end = session["_last_trial_end"]
+            next_entry_position = np.searchsorted(
+                all_entry_ns, trial_end.value, side="right"
+            )
+            next_entry_ns = (
+                all_entry_ns[next_entry_position]
+                if next_entry_position < len(all_entry_ns)
+                else None
+            )
+            position = np.searchsorted(
+                exit_ns,
+                (trial_end - pd.Timedelta(minutes=2)).value,
+                side="left",
+            )
+            while position < len(exit_ns) and position in used_positions:
+                position += 1
+            if position >= len(exit_ns):
+                unmatched["exit"] += 1
+                continue
+
+            exit_time = pd.Timestamp(exit_ns[position], tz="UTC")
+            entry_time = entry_by_uid.get(uid)
+            if (
+                (entry_time is not None and exit_time < entry_time)
+                or (next_entry_ns is not None and exit_ns[position] >= next_entry_ns)
+            ):
+                unmatched["exit"] += 1
+                continue
+
+            exit_by_uid[uid] = exit_time
+            used_positions.add(position)
+
+    uid_series = pd.to_numeric(result["_entry_exit_uid"], errors="coerce")
+    status_by_uid = {}
+    for uid in summaries["_entry_exit_uid"].astype(int):
+        has_entry = uid in entry_by_uid
+        has_exit = uid in exit_by_uid
+        if has_entry and has_exit and exit_by_uid[uid] >= entry_by_uid[uid]:
+            status_by_uid[uid] = "matched_entry_and_exit"
+        elif has_entry:
+            status_by_uid[uid] = "matched_entry_only"
+        elif has_exit:
+            status_by_uid[uid] = "matched_exit_only"
+        else:
+            status_by_uid[uid] = "no_door_event_match"
+
+    for uid, entry_time in entry_by_uid.items():
+        result.loc[uid_series.eq(uid), "entry_time"] = entry_time
+    for uid, exit_time in exit_by_uid.items():
+        result.loc[uid_series.eq(uid), "exit_time"] = exit_time
+    for uid, status in status_by_uid.items():
+        result.loc[uid_series.eq(uid), "entry_exit_match_status"] = status
+
+    entry = pd.to_datetime(result["entry_time"], errors="coerce", utc=True)
+    exit_time = pd.to_datetime(result["exit_time"], errors="coerce", utc=True)
+    duration_minutes = (exit_time - entry).dt.total_seconds() / 60
+    valid_duration = entry.notna() & exit_time.notna() & duration_minutes.ge(0)
+    result.loc[valid_duration, "time_spent_in_box"] = duration_minutes.loc[valid_duration]
+
+    if "datetime_start_session" in result.columns:
+        result["datetime_start_session"] = result["entry_time"]
+    if "datetime_end_session" in result.columns:
+        result["datetime_end_session"] = result["exit_time"]
+    if "event_session_status" in result.columns:
+        result["event_session_status"] = result["entry_exit_match_status"]
+    if "event_session_id" in result.columns:
+        result["event_session_id"] = pd.NA
+    if "event_session_task" in result.columns:
+        result["event_session_task"] = pd.NA
+
+    result.drop(columns=["_entry_exit_uid"], inplace=True)
+    LOGGER.info(
+        "Matched box door actions to %s entries and %s exits; unmatched door events: %s.",
+        len(entry_by_uid), len(exit_by_uid), unmatched,
+    )
+    return result
+
+
 def prepare_data(apply_filters: bool = False) -> pd.DataFrame:
     """Merge environment exports, prepare trial rows, and add session data."""
     merge_environment_files()
@@ -1150,7 +1400,8 @@ def prepare_data(apply_filters: bool = False) -> pd.DataFrame:
     events = _load_events()
     sessions = _build_sessions(events)
     sessions = _attach_environment_to_sessions(sessions)
-    return _attach_sessions(data, sessions, has_events=not events.empty)
+    data = _attach_sessions(data, sessions, has_events=not events.empty)
+    return _attach_entry_exit_times(data, events)
 
 
 def main() -> None:
