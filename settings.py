@@ -94,9 +94,10 @@ ENVIRONMENT_EXCEL_SHEET = "Environment"
 ENVIRONMENT_TIMEZONE = "Europe/Madrid"
 DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE = True
 
-# Academy event dates are written by datetime.now() as local wall time
-# (YYYY/MM/DD HH:MM:SS), without a UTC offset.
-EVENT_TIMEZONE = "Europe/Madrid"
+# Academy writes these event times without a UTC offset. Comparing the
+# door events with Unix trial timestamps in the sample shows that the logger
+# uses fixed UTC+01:00 (CET), without a daylight saving adjustment.
+EVENT_TIMEZONE = "Etc/GMT-1"
 EVENT_SUBJECT_ALIASES = {"chand": "chandler"}
 EVENT_NON_ANIMAL_SUBJECTS = (
     "academy", "none", "nan", "manual", "manual1", "manual2",
