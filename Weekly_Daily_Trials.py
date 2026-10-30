@@ -19,7 +19,7 @@ def _calendar_and_daily(frame):
     """Build daily village metrics and a denominator for each observed date."""
     trials = frame.groupby(["village", "day"]).size().rename("total_trials").reset_index()
     active = (
-        frame.assign(hour=frame["local_datetime"].dt.floor("h"))
+        frame.assign(hour=frame["local_datetime"].dt.tz_convert("UTC").dt.floor("h"))
         .drop_duplicates(["village", "subject", "day", "hour"])
         .groupby(["village", "day"]).size()
         .rename("active_rat_hours").reset_index()
