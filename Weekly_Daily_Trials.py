@@ -175,7 +175,10 @@ def generate(data):
     daily = _calendar_and_daily(frame)
     box = _box_minutes(frame)
     daily = daily.merge(box, on=["village", "day"], how="left")
-    daily["box_minutes"] = daily["box_minutes"].fillna(0)
+    # Missing session matches are unknown, not proof of zero box time.
+    # Trial-free days can be treated as zero, but days with trials and no
+    # matched sessions must remain missing.
+    daily.loc[daily["total_trials"].eq(0), "box_minutes"] = 0
     daily["trial_hour_occupancy_pct"] = (
         daily["active_rat_hours"] / (24 * daily["living_subjects"].replace(0, np.nan)) * 100
     )
@@ -199,6 +202,12 @@ def generate(data):
     weekly["actual_box_occupancy_pct"] = (
         weekly["box_minutes"] / (1440 * weekly["subject_days"]) * 100
     )
+    # A missing session match cannot be interpreted as zero occupancy.
+    missing_box = (daily.assign(missing_box=daily["box_minutes"].isna())
+                   .groupby(["village", "week_start"])["missing_box"].any().reset_index())
+    weekly = weekly.merge(missing_box, on=["village", "week_start"], how="left")
+    weekly.loc[weekly["missing_box"], "actual_box_occupancy_pct"] = np.nan
+    weekly = weekly.drop(columns="missing_box")
 
     # Individual daily extremes, including zero-trial living subjects.
     rat_daily = frame.groupby(["village", "subject", "day"]).size().rename("trials").reset_index()
@@ -220,7 +229,7 @@ def generate(data):
                   .any().rename("has_zero").reset_index())
     weekly = weekly.merge(zero_weeks, on=["village", "week_start"], how="left")
     weekly["min_trials_per_subject_day"] = np.where(
-        weekly["has_zero"], 0, weekly["observed_min"]
+        weekly["has_zero"], 0, weekly["observed_min"].fillna(0)
     )
     weekly = weekly.drop(columns=["observed_min", "has_zero"])
     weekly = weekly.sort_values(["village", "week_start"])
