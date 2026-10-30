@@ -327,7 +327,7 @@ def _draw_category_period_summary(pdf, summary, village):
                 row.experiment,
                 pd.Timestamp(row.period_start).strftime("%d %b %Y"),
                 pd.Timestamp(row.period_end).strftime("%d %b %Y"),
-                f"{int(row.period_days):,}",
+                f"{int(row.rat_days_with_trials):,}",
                 f"{int(row.subjects_with_trials):,}",
                 f"{row.mean_trials_per_subject_day:,.1f}",
             ])
@@ -337,9 +337,9 @@ def _draw_category_period_summary(pdf, summary, village):
                 "Task category",
                 "First trial",
                 "Last trial",
-                "Calendar days",
+                "Observed rat-days",
                 "Rats with trials",
-                "Mean trials per rat per day",
+                "Mean trials per active rat-day",
             ],
             cellLoc="center",
             colLoc="center",
@@ -360,10 +360,11 @@ def _draw_category_period_summary(pdf, summary, village):
         ax.text(
             0.02,
             0.12,
-            "For each rat, category trials were divided by the calendar days "
-            "from the category's first to last observed trial. The table shows "
+            "For each rat, category trials were divided by that rat's number "
+            "of distinct dates with trials in the category. The table shows "
             "the equal-weighted mean across rats with at least one trial in "
-            "that category during the period.",
+            "that category during the period. Observed rat-days is the sum "
+            "of those rat-specific date counts.",
             ha="left",
             va="top",
             fontsize=9,
@@ -529,21 +530,24 @@ def generate(data):
     ):
         period_start = category_frame["day"].min()
         period_end = category_frame["day"].max()
-        period_days = (period_end - period_start).days + 1
-        rat_totals = category_frame.groupby("subject").size()
-        rat_rates = rat_totals / period_days
+        rat_totals = category_frame.groupby("subject").size().rename("total_trials")
+        rat_days = category_frame.groupby("subject")["day"].nunique().rename("observed_days")
+        rat_summary = pd.concat([rat_totals, rat_days], axis=1)
+        rat_summary["trials_per_active_day"] = (
+            rat_summary["total_trials"] / rat_summary["observed_days"]
+        )
         period_summary_rows.append({
             "village": village,
             "experiment": experiment,
             "period_start": period_start,
             "period_end": period_end,
-            "period_days": period_days,
-            "total_trials": int(rat_totals.sum()),
-            "subjects_with_trials": int(rat_totals.size),
-            "mean_trials_per_subject_day": float(rat_rates.mean()),
+            "rat_days_with_trials": int(rat_summary["observed_days"].sum()),
+            "total_trials": int(rat_summary["total_trials"].sum()),
+            "subjects_with_trials": int(rat_summary.shape[0]),
+            "mean_trials_per_subject_day": float(rat_summary["trials_per_active_day"].mean()),
         })
     category_period_summary = pd.DataFrame(period_summary_rows, columns=[
-        "village", "experiment", "period_start", "period_end", "period_days",
+        "village", "experiment", "period_start", "period_end", "rat_days_with_trials",
         "total_trials", "subjects_with_trials", "mean_trials_per_subject_day",
     ])
     weekly["trial_hour_occupancy_pct"] = (
