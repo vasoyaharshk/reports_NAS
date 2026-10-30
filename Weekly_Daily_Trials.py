@@ -146,13 +146,15 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village, kind):
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
     if not years:
         return
+    # Stack year panels vertically so a long village history stays readable
+    # on one page instead of making the figure progressively wider.
     fig, axes = plt.subplots(
-        1, len(years),
-        figsize=(max(13, 6.2 * len(years)), 6.8),
+        len(years), 1,
+        figsize=(15, max(6.8, 3.5 * len(years))),
         squeeze=False,
         sharey=True,
     )
-    axes = axes[0]
+    axes = axes[:, 0]
     palette = {
         "Early Training": "#0072B2",
         "Working Memory": "#D55E00",
@@ -218,15 +220,21 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village, kind):
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
-    handles, labels = axes[0].get_legend_handles_labels()
+    legend_items = {}
+    for ax in axes:
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels):
+            legend_items.setdefault(label, handle)
+    handles = list(legend_items.values())
+    labels = list(legend_items)
     fig.suptitle(
         f"{village}: weekly {'trial averages by experiment' if kind == 'trials' else 'occupancy'}",
         fontsize=15,
         weight="bold",
     )
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.91),
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.965),
                ncol=min(6, max(1, len(labels))), frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.84))
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -276,6 +284,8 @@ def generate(data):
     weekly["mean_trials_per_subject_day"] = weekly["total_trials"] / weekly["subject_days"]
 
     # Add an experiment-family breakdown on the same living-rat-day denominator.
+    # Keep each family within its observed run span: dates before it began or
+    # after it ended are not zero-trial experiment days.
     frame["experiment"] = _experiment_family(frame)
     category_daily = (
         frame.groupby(["village", "experiment", "day"])
@@ -288,35 +298,37 @@ def generate(data):
         )
         if not categories:
             continue
-        expanded = pd.MultiIndex.from_product(
-            [categories, village_days["day"]],
-            names=["experiment", "day"],
-        ).to_frame(index=False)
-        expanded["village"] = village
-        expanded = expanded.merge(
-            village_days[["village", "day", "living_subjects"]],
-            on=["village", "day"],
-            how="left",
-            validate="many_to_one",
-        )
         counts = category_daily.loc[category_daily["village"].eq(village)]
-        expanded = expanded.merge(
-            counts,
-            on=["village", "experiment", "day"],
-            how="left",
-            validate="one_to_one",
-        )
-        expanded["total_trials"] = expanded["total_trials"].fillna(0).astype(int)
-        expanded["week_start"] = expanded["day"] - pd.to_timedelta(
-            expanded["day"].dt.weekday, unit="D"
-        )
-        part = (
-            expanded.groupby(["village", "experiment", "week_start"], as_index=False)
-            .agg(
-                total_trials=("total_trials", "sum"),
-                living_subject_days=("living_subjects", "sum"),
+        experiment_parts = []
+        for experiment in categories:
+            experiment_counts = counts.loc[counts["experiment"].eq(experiment)]
+            active_days = village_days.loc[
+                village_days["day"].between(
+                    experiment_counts["day"].min(), experiment_counts["day"].max()
+                ),
+                ["day", "living_subjects"],
+            ].copy()
+            active_days["village"] = village
+            active_days["experiment"] = experiment
+            active_days = active_days.merge(
+                experiment_counts,
+                on=["village", "experiment", "day"],
+                how="left",
+                validate="one_to_one",
             )
-        )
+            active_days["total_trials"] = active_days["total_trials"].fillna(0).astype(int)
+            active_days["week_start"] = active_days["day"] - pd.to_timedelta(
+                active_days["day"].dt.weekday, unit="D"
+            )
+            experiment_parts.append(
+                active_days.groupby(
+                    ["village", "experiment", "week_start"], as_index=False
+                ).agg(
+                    total_trials=("total_trials", "sum"),
+                    living_subject_days=("living_subjects", "sum"),
+                )
+            )
+        part = pd.concat(experiment_parts, ignore_index=True)
         part["mean_trials_per_living_rat_day"] = (
             part["total_trials"] / part["living_subject_days"]
         )
@@ -376,3 +388,4 @@ def generate(data):
             _draw_year_facets(pdf, subset, experiment_weekly, village, "trials")
             _draw_year_facets(pdf, subset, experiment_weekly, village, "occupancy")
     return pdf_path, csv_path
+
