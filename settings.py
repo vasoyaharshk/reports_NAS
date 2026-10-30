@@ -34,7 +34,7 @@ VILLAGE_INPUTS = {
 }
 
 # Task switches: True includes that task family in the sorted output.
-Working_Memory = False
+Working_Memory = True
 Probability = True
 Cognitive_bias = True
 
@@ -43,7 +43,7 @@ Cognitive_bias = True
 INCLUDE_UNCLASSIFIED_TASKS = True
 
 # Kept configurable to mirror the exclusions in the current R sorting script.
-EXCLUDED_SUBJECTS = ("m2", "m3", "luna", "rachel", "geralt", "erza", "ross")
+EXCLUDED_SUBJECTS = ("m2", "m3", "luna", "rachel", "geralt", "erza", "ross", "chand")
 
 # Optional workbook containing sheets named ratvillage1, ratvillage2, ratvillage3
 # with date and inactive_hours columns. Leave as None if it is not available.
