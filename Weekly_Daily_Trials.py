@@ -217,10 +217,6 @@ def generate(data):
                 .agg(max_trials_per_subject_day="max", observed_min="min")
                 .reset_index())
     weekly = weekly.merge(extremes, on=["village", "week_start"], how="left")
-    weekly["min_trials_per_subject_day"] = np.where(
-        weekly["subject_days"] > weekly["observed_days"].where(False, 0),
-        weekly["observed_min"], weekly["observed_min"]
-    )
     # Detect zero-trial rat-days using the daily population and observed rat counts.
     observed_counts = rat_daily.groupby(["village", "day"]).size().rename("observed_rats").reset_index()
     missing_days = daily.merge(observed_counts, on=["village", "day"], how="left")
