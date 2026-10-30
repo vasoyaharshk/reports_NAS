@@ -44,7 +44,10 @@ def _experiment_family(frame):
     ] = "Probability"
     # Use the task name when it identifies a family. The Early Training
     # source is only a fallback for otherwise unclassified task names.
-    early_training_task = task_key.str.contains("earlytraining", na=False)
+    early_training_task = task_key.str.contains(
+        "earlytraining|touchteaching|lickteaching|habituation|automaticwater",
+        na=False,
+    )
     early_training_source_fallback = (
         source_key.str.startswith("early_training") & family.isna()
     )
