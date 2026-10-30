@@ -150,6 +150,21 @@ def _box_minutes(frame):
             .groupby(["village", "day"], as_index=False)["box_minutes"].sum())
 
 
+def _nice_trial_tick_step(maximum):
+    """Choose readable y-axis intervals independently for each year facet."""
+    if pd.isna(maximum) or maximum <= 10:
+        return 1
+    if maximum <= 20:
+        return 2
+    if maximum <= 50:
+        return 5
+    if maximum <= 100:
+        return 10
+    if maximum <= 500:
+        return 50
+    return 100
+
+
 def _draw_overall_trials_year_facets(pdf, weekly, village):
     """Draw the village-wide weekly average, minimum, and maximum by year."""
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
@@ -182,7 +197,7 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
         ax.plot(x, minimum, color="#059669", linestyle="--", linewidth=1.2,
                 label="Minimum")
 
-        ax.set_ylabel("Trials per living rat per day")
+        ax.set_ylabel("Trials per rat per day")
         ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         ticks = subset["week_start"]
@@ -193,15 +208,14 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
             fontsize=7,
         )
         ax.set_xlabel("Week starting Monday")
-        year_max = maximum.max(skipna=True)
-        step = 10 if pd.isna(year_max) or year_max <= 100 else (50 if year_max <= 500 else 100)
-        ax.yaxis.set_major_locator(MultipleLocator(step))
+        year_max = max(maximum.max(skipna=True), average.max(skipna=True))
+        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.suptitle(
-        f"{village}: weekly trials per living rat",
+        f"{village}: weekly trials per rat",
         fontsize=15,
         weight="bold",
     )
@@ -276,7 +290,8 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
             fontsize=7,
         )
         ax.set_xlabel("Week starting Monday")
-        ax.yaxis.set_major_locator(MultipleLocator(10))
+        year_max = year_experiments["mean_trials_per_subject_day"].max(skipna=True)
+        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
