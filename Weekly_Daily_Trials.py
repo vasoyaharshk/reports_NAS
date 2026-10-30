@@ -42,16 +42,12 @@ def _experiment_family(frame):
         task_key.str.contains("probability|weber", na=False)
         | task_key.str.startswith("pi", na=False)
     ] = "Probability"
-    # Use the task name when it identifies a family. The Early Training
-    # source is only a fallback for otherwise unclassified task names.
+    # Early Training is defined by these task names, independent of source file.
     early_training_task = task_key.str.contains(
-        "earlytraining|touchteaching|lickteaching|habituation|automaticwater",
+        "touchteaching|lickteaching|habituation",
         na=False,
     )
-    early_training_source_fallback = (
-        source_key.str.startswith("early_training") & family.isna()
-    )
-    family.loc[early_training_task | early_training_source_fallback] = "Early Training"
+    family.loc[early_training_task] = "Early Training"
     family.loc[source_key.str.startswith("working_memory")] = "Working Memory"
     return family
 
@@ -307,6 +303,79 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
     plt.close(fig)
 
 
+
+def _draw_category_period_summary(pdf, summary, village):
+    """Draw full-period Method 1 averages by experiment category."""
+    subset = summary.loc[summary["village"].eq(village)].sort_values("experiment")
+
+    fig, ax = plt.subplots(figsize=(16, 6))
+    ax.axis("off")
+    fig.suptitle(
+        f"{village}: average trials per rat per day by task category",
+        fontsize=15,
+        weight="bold",
+        y=0.96,
+    )
+
+    if subset.empty:
+        ax.text(0.5, 0.5, "No classified task trials available",
+                ha="center", va="center", fontsize=12, transform=ax.transAxes)
+    else:
+        rows = []
+        for row in subset.itertuples(index=False):
+            rows.append([
+                row.experiment,
+                pd.Timestamp(row.period_start).strftime("%d %b %Y"),
+                pd.Timestamp(row.period_end).strftime("%d %b %Y"),
+                f"{int(row.period_days):,}",
+                f"{int(row.subjects_with_trials):,}",
+                f"{row.mean_trials_per_subject_day:,.1f}",
+            ])
+        table = ax.table(
+            cellText=rows,
+            colLabels=[
+                "Task category",
+                "First trial",
+                "Last trial",
+                "Calendar days",
+                "Rats with trials",
+                "Mean trials per rat per day",
+            ],
+            cellLoc="center",
+            colLoc="center",
+            colWidths=[0.22, 0.15, 0.15, 0.13, 0.15, 0.20],
+            loc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.8)
+        for (row_index, _), cell in table.get_celld().items():
+            cell.set_edgecolor("#D1D5DB")
+            if row_index == 0:
+                cell.set_facecolor("#E8EEF8")
+                cell.set_text_props(weight="bold", color="#1F2937")
+            else:
+                cell.set_facecolor("white")
+
+        ax.text(
+            0.02,
+            0.12,
+            "For each rat, category trials were divided by the calendar days "
+            "from the category's first to last observed trial. The table shows "
+            "the equal-weighted mean across rats with at least one trial in "
+            "that category during the period.",
+            ha="left",
+            va="top",
+            fontsize=9,
+            color="#4B5563",
+            transform=ax.transAxes,
+            wrap=True,
+        )
+
+    fig.tight_layout(rect=(0, 0.04, 1, 0.90))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
 def generate(data):
     """Write weekly trial and occupancy graphs into one PDF plus CSV summaries."""
     required = {"ratvillage", "subject", "datetime"}
@@ -450,6 +519,33 @@ def generate(data):
     experiment_weekly = experiment_weekly.sort_values(
         ["village", "experiment", "week_start"]
     )
+
+    # Full-period Method 1: calculate one rate per rat and category, then
+    # average those rates equally across rats with trials in that category.
+    period_summary_rows = []
+    classified = frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
+    for (village, experiment), category_frame in classified.groupby(
+        ["village", "experiment"], sort=True
+    ):
+        period_start = category_frame["day"].min()
+        period_end = category_frame["day"].max()
+        period_days = (period_end - period_start).days + 1
+        rat_totals = category_frame.groupby("subject").size()
+        rat_rates = rat_totals / period_days
+        period_summary_rows.append({
+            "village": village,
+            "experiment": experiment,
+            "period_start": period_start,
+            "period_end": period_end,
+            "period_days": period_days,
+            "total_trials": int(rat_totals.sum()),
+            "subjects_with_trials": int(rat_totals.size),
+            "mean_trials_per_subject_day": float(rat_rates.mean()),
+        })
+    category_period_summary = pd.DataFrame(period_summary_rows, columns=[
+        "village", "experiment", "period_start", "period_end", "period_days",
+        "total_trials", "subjects_with_trials", "mean_trials_per_subject_day",
+    ])
     weekly["trial_hour_occupancy_pct"] = (
         weekly["active_rat_hours"] / (24 * weekly["subject_days"]) * 100
     )
@@ -510,6 +606,9 @@ def generate(data):
     experiment_csv_path = directory / "Weekly_Daily_Trials_By_Experiment.csv"
     experiment_weekly.to_csv(experiment_csv_path, index=False, encoding="utf-8-sig")
     LOGGER.info("Saved weekly trial averages by experiment to %s", experiment_csv_path)
+    category_summary_path = directory / "Trials_Per_Day_By_Experiment_Summary.csv"
+    category_period_summary.to_csv(category_summary_path, index=False, encoding="utf-8-sig")
+    LOGGER.info("Saved full-period category averages to %s", category_summary_path)
     daily_path = directory / "Weekly_Daily_Occupancy.csv"
     daily.to_csv(daily_path, index=False, encoding="utf-8-sig")
 
@@ -519,5 +618,6 @@ def generate(data):
             subset = subset.sort_values("week_start").reset_index(drop=True)
             _draw_overall_trials_year_facets(pdf, subset, village)
             _draw_year_facets(pdf, subset, experiment_weekly, village)
+            _draw_category_period_summary(pdf, category_period_summary, village)
     return pdf_path, csv_path
 
