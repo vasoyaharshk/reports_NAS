@@ -147,15 +147,18 @@ def _warn_on_rv1_working_memory_overlap(frames: list[pd.DataFrame]) -> None:
         )
         return
 
-    def identity(frame: pd.DataFrame) -> pd.Series:
-        start = _parse_epoch_or_datetime(frame["TRIAL_START"]).astype("string")
+    def identity(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+        parsed_start = _parse_epoch_or_datetime(frame["TRIAL_START"])
+        start = parsed_start.astype("string")
         subject = frame["subject"].astype("string").str.strip().str.casefold()
         task = frame["task"].astype("string").str.strip().str.casefold()
-        return subject.fillna("<NA>") + "|" + task.fillna("<NA>") + "|" + start.fillna("<NA>")
+        keys = subject.fillna("<NA>") + "|" + task.fillna("<NA>") + "|" + start.fillna("<NA>")
+        return keys, parsed_start.notna()
 
-    global_keys = set(identity(global_data))
-    wm_keys = identity(wm_data)
-    overlap = wm_keys.isin(global_keys) & wm_data["TRIAL_START"].notna()
+    global_keys, _ = identity(global_data)
+    wm_keys, valid_wm_start = identity(wm_data)
+    global_keys = set(global_keys)
+    overlap = wm_keys.isin(global_keys) & valid_wm_start
     overlap_count = int(overlap.sum())
     if overlap_count:
         examples = wm_data.loc[overlap, ["subject", "task", "TRIAL_START"]].head(5)
