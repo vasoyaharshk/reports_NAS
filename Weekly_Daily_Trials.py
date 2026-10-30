@@ -150,6 +150,74 @@ def _box_minutes(frame):
             .groupby(["village", "day"], as_index=False)["box_minutes"].sum())
 
 
+def _draw_overall_trials_year_facets(pdf, weekly, village):
+    """Draw the village-wide weekly average, minimum, and maximum by year."""
+    years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
+    if not years:
+        return
+
+    fig, axes = plt.subplots(
+        len(years),
+        1,
+        figsize=(16, max(5.5, 4.2 * len(years))),
+        squeeze=False,
+        sharex=False,
+        sharey=False,
+    )
+    for ax, year in zip(axes[:, 0], years):
+        subset = weekly.loc[
+            pd.to_datetime(weekly["week_start"]).dt.year.eq(year)
+        ].sort_values("week_start")
+        x = subset["week_start"]
+        minimum = pd.to_numeric(subset["min_trials_per_subject_day"], errors="coerce")
+        maximum = pd.to_numeric(subset["max_trials_per_subject_day"], errors="coerce")
+        average = pd.to_numeric(subset["mean_trials_per_subject_day"], errors="coerce")
+
+        ax.fill_between(x, minimum, maximum, color="#6495ed", alpha=0.22,
+                        label="Minimum to maximum range")
+        ax.plot(x, maximum, color="#d97706", linestyle="--", linewidth=1.2,
+                label="Maximum")
+        ax.plot(x, average, color="#1e3a8a", linewidth=2.4, marker="o",
+                markersize=2.5, label="Average")
+        ax.plot(x, minimum, color="#059669", linestyle="--", linewidth=1.2,
+                label="Minimum")
+
+        ax.set_ylabel("Trials per living rat per day")
+        ax.set_ylim(bottom=0)
+        ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
+        ticks = subset["week_start"]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(
+            pd.to_datetime(ticks).dt.strftime("%d %b"),
+            rotation=90,
+            fontsize=7,
+        )
+        ax.set_xlabel("Week starting Monday")
+        year_max = maximum.max(skipna=True)
+        step = 10 if pd.isna(year_max) or year_max <= 100 else (50 if year_max <= 500 else 100)
+        ax.yaxis.set_major_locator(MultipleLocator(step))
+        ax.grid(axis="y", alpha=0.22)
+        ax.set_axisbelow(True)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.suptitle(
+        f"{village}: weekly trials per living rat",
+        fontsize=15,
+        weight="bold",
+    )
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.97),
+        ncol=4,
+        frameon=False,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _draw_year_facets(pdf, weekly, experiment_weekly, village):
     """Draw weekly experiment averages with one vertically stacked panel per year."""
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
@@ -385,6 +453,7 @@ def generate(data):
     with PdfPages(pdf_path) as pdf:
         for village, subset in weekly.groupby("village", sort=True):
             subset = subset.sort_values("week_start").reset_index(drop=True)
+            _draw_overall_trials_year_facets(pdf, subset, village)
             _draw_year_facets(pdf, subset, experiment_weekly, village)
     return pdf_path, csv_path
 
