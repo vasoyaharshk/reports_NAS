@@ -7,6 +7,7 @@ from pathlib import Path
 import Period_Comparison
 import Status_Activity_Report
 import Trials_Per_Task
+import Weekly_Daily_Trials
 import settings
 from prepare_data import prepare_data
 
@@ -27,7 +28,8 @@ def main() -> None:
     outputs = [Status_Activity_Report.generate(data)]
     trials_pdf, trials_csv = Trials_Per_Task.generate(data)
     period_workbook = Period_Comparison.generate(data)
-    outputs.extend([trials_pdf, trials_csv, period_workbook])
+    weekly_pdf, weekly_csv = Weekly_Daily_Trials.generate(data)
+    outputs.extend([trials_pdf, trials_csv, period_workbook, weekly_pdf, weekly_csv])
     for output in outputs:
         if output is not None:
             LOGGER.info("Generated %s", output)
