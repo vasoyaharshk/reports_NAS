@@ -32,6 +32,7 @@ def _experiment_family(frame):
     family.loc[
         task_key.str.contains("workingmemory", na=False)
         | task_key.str.startswith("wm", na=False)
+        | task_key.str.startswith("stagetraining", na=False)
     ] = "Working Memory"
     family.loc[
         task_key.str.contains("cognitivebias", na=False)
@@ -41,11 +42,13 @@ def _experiment_family(frame):
         task_key.str.contains("probability|weber", na=False)
         | task_key.str.startswith("pi", na=False)
     ] = "Probability"
-    # Source files take precedence for the separate Early Training and WM exports.
-    family.loc[
-        source_key.str.startswith("early_training")
-        | task_key.str.contains("earlytraining", na=False)
-    ] = "Early Training"
+    # Use the task name when it identifies a family. The Early Training
+    # source is only a fallback for otherwise unclassified task names.
+    early_training_task = task_key.str.contains("earlytraining", na=False)
+    early_training_source_fallback = (
+        source_key.str.startswith("early_training") & family.isna()
+    )
+    family.loc[early_training_task | early_training_source_fallback] = "Early Training"
     family.loc[source_key.str.startswith("working_memory")] = "Working Memory"
     return family
 
