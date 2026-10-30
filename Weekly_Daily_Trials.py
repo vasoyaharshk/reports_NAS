@@ -256,7 +256,7 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
                 continue
             ax.plot(
                 series["week_start"],
-                series["mean_trials_per_living_rat_day"],
+                series["mean_trials_per_subject_day"],
                 color=palette[experiment],
                 linewidth=1.8,
                 marker="o",
@@ -345,17 +345,30 @@ def generate(data):
                    box_minutes=("box_minutes", "sum"),
                    subject_days=("living_subjects", "sum"),
                    observed_days=("day", "size")))
-    weekly["mean_trials_per_subject_day"] = weekly["total_trials"] / weekly["subject_days"]
 
-    # Add an experiment-family breakdown on the same living-rat-day denominator.
-    # Keep each family within its observed run span: dates before it began or
-    # after it ended are not zero-trial experiment days.
+    # Method 1 by experiment: calculate each rat's average daily trials
+    # within the category's observed run span, then average equally across rats.
     frame["experiment"] = _experiment_family(frame)
     category_daily = (
         frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
         .groupby(["village", "experiment", "day"])
         .size().rename("total_trials").reset_index()
     )
+    experiment_rat_daily = (
+        frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
+        .groupby(["village", "experiment", "subject", "day"])
+        .size().rename("trials").reset_index()
+    )
+    experiment_rat_daily["week_start"] = (
+        experiment_rat_daily["day"]
+        - pd.to_timedelta(experiment_rat_daily["day"].dt.weekday, unit="D")
+    )
+    experiment_rat_week = (
+        experiment_rat_daily.groupby(
+            ["village", "experiment", "subject", "week_start"], as_index=False
+        ).agg(subject_week_trials=("trials", "sum"))
+    )
+
     experiment_weekly_parts = []
     for village, village_days in daily.groupby("village", sort=True):
         categories = [
@@ -364,44 +377,77 @@ def generate(data):
                 category_daily["village"].eq(village), "experiment"
             ])
         ]
-        if not categories:
-            continue
-        counts = category_daily.loc[category_daily["village"].eq(village)]
-        experiment_parts = []
         for experiment in categories:
-            experiment_counts = counts.loc[counts["experiment"].eq(experiment)]
+            family_counts = category_daily.loc[
+                category_daily["village"].eq(village)
+                & category_daily["experiment"].eq(experiment)
+            ]
+            first_day = family_counts["day"].min()
+            last_day = family_counts["day"].max()
             active_days = village_days.loc[
-                village_days["day"].between(
-                    experiment_counts["day"].min(), experiment_counts["day"].max()
-                ),
-                ["day", "living_subjects"],
+                village_days["day"].between(first_day, last_day), ["day"]
             ].copy()
             active_days["village"] = village
             active_days["experiment"] = experiment
-            active_days = active_days.merge(
-                experiment_counts,
-                on=["village", "experiment", "day"],
+            active_days["week_start"] = (
+                active_days["day"]
+                - pd.to_timedelta(active_days["day"].dt.weekday, unit="D")
+            )
+            active_week_days = (
+                active_days.groupby(
+                    ["village", "experiment", "week_start"], as_index=False
+                ).agg(days_in_week=("day", "size"))
+            )
+
+            rat_week = experiment_rat_week.loc[
+                experiment_rat_week["village"].eq(village)
+                & experiment_rat_week["experiment"].eq(experiment)
+            ].merge(
+                active_week_days,
+                on=["village", "experiment", "week_start"],
+                how="left",
+                validate="many_to_one",
+            )
+            rat_week["subject_daily_average"] = (
+                rat_week["subject_week_trials"] / rat_week["days_in_week"]
+            )
+            observed_weekly = (
+                rat_week.groupby(
+                    ["village", "experiment", "week_start"], as_index=False
+                ).agg(
+                    total_trials=("subject_week_trials", "sum"),
+                    subjects_with_trials=("subject", "nunique"),
+                    mean_trials_per_subject_day=("subject_daily_average", "mean"),
+                    min_trials_per_subject_day=("subject_daily_average", "min"),
+                    max_trials_per_subject_day=("subject_daily_average", "max"),
+                )
+            )
+            family_weekly = active_week_days.merge(
+                observed_weekly,
+                on=["village", "experiment", "week_start"],
                 how="left",
                 validate="one_to_one",
             )
-            active_days["total_trials"] = active_days["total_trials"].fillna(0).astype(int)
-            active_days["week_start"] = active_days["day"] - pd.to_timedelta(
-                active_days["day"].dt.weekday, unit="D"
-            )
-            experiment_parts.append(
-                active_days.groupby(
-                    ["village", "experiment", "week_start"], as_index=False
-                ).agg(
-                    total_trials=("total_trials", "sum"),
-                    living_subject_days=("living_subjects", "sum"),
-                )
-            )
-        part = pd.concat(experiment_parts, ignore_index=True)
-        part["mean_trials_per_living_rat_day"] = (
-            part["total_trials"] / part["living_subject_days"]
-        )
-        experiment_weekly_parts.append(part)
-    experiment_weekly = pd.concat(experiment_weekly_parts, ignore_index=True)
+            for column in (
+                "total_trials",
+                "subjects_with_trials",
+                "mean_trials_per_subject_day",
+                "min_trials_per_subject_day",
+                "max_trials_per_subject_day",
+            ):
+                family_weekly[column] = family_weekly[column].fillna(0)
+            experiment_weekly_parts.append(family_weekly)
+
+    experiment_weekly = (
+        pd.concat(experiment_weekly_parts, ignore_index=True)
+        if experiment_weekly_parts
+        else pd.DataFrame(columns=[
+            "village", "experiment", "week_start", "days_in_week",
+            "total_trials", "subjects_with_trials",
+            "mean_trials_per_subject_day", "min_trials_per_subject_day",
+            "max_trials_per_subject_day",
+        ])
+    )
     experiment_weekly = experiment_weekly.sort_values(
         ["village", "experiment", "week_start"]
     )
@@ -418,25 +464,50 @@ def generate(data):
     weekly.loc[weekly["missing_box"], "actual_box_occupancy_pct"] = np.nan
     weekly = weekly.drop(columns="missing_box")
 
-    # Individual daily extremes, including zero-trial living subjects.
-    rat_daily = frame.groupby(["village", "subject", "day"]).size().rename("trials").reset_index()
-    extremes = (rat_daily.assign(week_start=lambda d: d["day"] -
-                pd.to_timedelta(d["day"].dt.weekday, unit="D"))
-                .groupby(["village", "week_start"])["trials"]
-                .agg(max_trials_per_subject_day="max", observed_min="min")
-                .reset_index())
-    weekly = weekly.merge(extremes, on=["village", "week_start"], how="left")
-    # Detect zero-trial rat-days using the daily population and observed rat counts.
-    observed_counts = rat_daily.groupby(["village", "day"]).size().rename("observed_rats").reset_index()
-    missing_days = daily.merge(observed_counts, on=["village", "day"], how="left")
-    missing_days["has_zero"] = missing_days["living_subjects"] > missing_days["observed_rats"].fillna(0)
-    zero_weeks = (missing_days.groupby(["village", "week_start"])["has_zero"]
-                  .any().rename("has_zero").reset_index())
-    weekly = weekly.merge(zero_weeks, on=["village", "week_start"], how="left")
-    weekly["min_trials_per_subject_day"] = np.where(
-        weekly["has_zero"], 0, weekly["observed_min"].fillna(0)
+    # Method 1 overall: calculate each rat's weekly average daily rate,
+    # then average those rates equally across rats with trial records that week.
+    rat_daily = (
+        frame.groupby(["village", "subject", "day"])
+        .size().rename("trials").reset_index()
     )
-    weekly = weekly.drop(columns=["observed_min", "has_zero"])
+    rat_daily["week_start"] = (
+        rat_daily["day"] - pd.to_timedelta(rat_daily["day"].dt.weekday, unit="D")
+    )
+    rat_week = (
+        rat_daily.groupby(["village", "subject", "week_start"], as_index=False)
+        .agg(subject_week_trials=("trials", "sum"))
+        .merge(
+            weekly[["village", "week_start", "observed_days"]],
+            on=["village", "week_start"],
+            how="left",
+            validate="many_to_one",
+        )
+    )
+    rat_week["subject_daily_average"] = (
+        rat_week["subject_week_trials"] / rat_week["observed_days"]
+    )
+    rat_week_summary = (
+        rat_week.groupby(["village", "week_start"], as_index=False)
+        .agg(
+            mean_trials_per_subject_day=("subject_daily_average", "mean"),
+            min_trials_per_subject_day=("subject_daily_average", "min"),
+            max_trials_per_subject_day=("subject_daily_average", "max"),
+            subjects_with_trials=("subject", "nunique"),
+        )
+    )
+    weekly = weekly.merge(
+        rat_week_summary,
+        on=["village", "week_start"],
+        how="left",
+        validate="one_to_one",
+    )
+    for column in (
+        "mean_trials_per_subject_day",
+        "min_trials_per_subject_day",
+        "max_trials_per_subject_day",
+        "subjects_with_trials",
+    ):
+        weekly[column] = weekly[column].fillna(0)
     weekly = weekly.sort_values(["village", "week_start"])
 
     directory = Path(settings.REPORT_DIRECTORY)
