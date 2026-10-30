@@ -19,7 +19,7 @@ python -m pip install pandas openpyxl matplotlib
 python main.py
 ```
 
-During preparation, environment exports are merged per village into `H:\NAS\\environment\\environment_rv2.csv` and `environment_rv3.csv`. CSV and Excel files are supported. Columns are aligned by name, timestamps are validated and sorted, and exact duplicate rows are removed. Source files are kept and source folders are never written to. Rows with the same timestamp but different readings are retained.
+During preparation, environment exports are merged per village into `H:\NAS\environment\environment_rv2.csv` and `environment_rv3.csv`. CSV and Excel files are supported. Columns are aligned by name, timestamps are validated and sorted, and exact duplicate rows are removed. Source files are kept and source folders are never written to. Rows with the same timestamp but different readings are retained.
 
 `main.py` is the master script. Run `python main.py` to prepare the all-column trial dataset and generate Early Training, Working Memory (when enabled), Cognitive Bias, Probability, Status and Activity, Trials per Task, weekly daily-trial reports, and period-comparison reports. Prepared files go to the repository's `output` and `reports` folders.
 
