@@ -252,7 +252,11 @@ def _task_family(task: Any) -> str:
         return "unclassified"
     if "cognitivebias" in name or name.startswith("cb"):
         return "cognitive_bias"
-    if "workingmemory" in name or name.startswith("wm"):
+    if (
+        "workingmemory" in name
+        or name.startswith("wm")
+        or name.startswith("stagetraining")
+    ):
         return "working_memory"
     if "probability" in name or "weber" in name or name.startswith("pi"):
         return "probability"
