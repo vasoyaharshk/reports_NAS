@@ -12,14 +12,23 @@ import pandas as pd
 import settings
 
 LOGGER = logging.getLogger(__name__)
+EXPERIMENT_FAMILIES = (
+    "Working Memory",
+    "Early Training",
+    "Probability",
+    "Cognitive Bias",
+)
+
+
 def _experiment_family(frame):
-    """Classify every trial into its source experiment family."""
+    """Classify trials into the four experiment families used in the plot."""
     task = frame.get("task", pd.Series("", index=frame.index)).astype("string")
     source = frame.get("dataset", pd.Series("", index=frame.index)).astype("string")
     task_key = task.str.lower().str.replace(r"[^a-z0-9]+", "", regex=True)
     source_key = source.str.lower().fillna("")
 
-    family = pd.Series("Other", index=frame.index, dtype="string")
+    # Unmatched tasks are excluded from this experiment-family breakdown.
+    family = pd.Series(pd.NA, index=frame.index, dtype="string")
     family.loc[
         task_key.str.contains("workingmemory", na=False)
         | task_key.str.startswith("wm", na=False)
@@ -141,100 +150,87 @@ def _box_minutes(frame):
             .groupby(["village", "day"], as_index=False)["box_minutes"].sum())
 
 
-def _draw_year_facets(pdf, weekly, experiment_weekly, village, kind):
-    """Draw the complete village timeline in one figure, split into year panels."""
+def _draw_year_facets(pdf, weekly, experiment_weekly, village):
+    """Draw weekly experiment averages with one vertically stacked panel per year."""
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
     if not years:
         return
-    # Stack year panels vertically so a long village history stays readable
-    # on one page instead of making the figure progressively wider.
+
     fig, axes = plt.subplots(
-        len(years), 1,
-        figsize=(15, max(6.8, 3.5 * len(years))),
+        len(years),
+        1,
+        figsize=(16, max(5.5, 4.2 * len(years))),
         squeeze=False,
-        sharey=True,
+        sharex=False,
+        sharey=False,
     )
-    axes = axes[:, 0]
     palette = {
-        "Early Training": "#0072B2",
         "Working Memory": "#D55E00",
-        "Cognitive Bias": "#009E73",
+        "Early Training": "#0072B2",
         "Probability": "#CC79A7",
-        "Other": "#777777",
+        "Cognitive Bias": "#009E73",
     }
 
-    for ax, year in zip(axes, years):
+    for ax, year in zip(axes[:, 0], years):
         village_weeks = weekly.loc[
             pd.to_datetime(weekly["week_start"]).dt.year.eq(year)
         ].sort_values("week_start")
-        if kind == "trials":
-            year_experiments = experiment_weekly.loc[
-                experiment_weekly["village"].eq(village)
-                & pd.to_datetime(experiment_weekly["week_start"]).dt.year.eq(year)
-            ]
-            for experiment, series in year_experiments.groupby("experiment", sort=False):
-                series = series.sort_values("week_start")
-                ax.plot(
-                    series["week_start"],
-                    series["mean_trials_per_living_rat_day"],
-                    color=palette.get(experiment, palette["Other"]),
-                    linewidth=1.8,
-                    marker="o",
-                    markersize=2.5,
-                    label=experiment,
-                )
-            ax.plot(
-                village_weeks["week_start"],
-                village_weeks["mean_trials_per_subject_day"],
-                color="#222222",
-                linewidth=2.8,
-                label="All experiments",
-            )
-            ax.set_ylabel("Trials per living rat per day")
-            ax.set_ylim(bottom=0)
-            ax.set_title(str(year))
-        else:
-            ax.plot(
-                village_weeks["week_start"],
-                village_weeks["trial_hour_occupancy_pct"],
-                color="#253858",
-                linewidth=1.8,
-                label="Trial-hour occupancy",
-            )
-            ax.plot(
-                village_weeks["week_start"],
-                village_weeks["actual_box_occupancy_pct"],
-                color="#9ec5e8",
-                linewidth=1.8,
-                label="Time in box",
-            )
-            ax.set_ylabel("Occupancy per living rat (% of day)")
-            ax.set_ylim(0, 100)
-            ax.set_title(str(year))
+        year_experiments = experiment_weekly.loc[
+            experiment_weekly["village"].eq(village)
+            & pd.to_datetime(experiment_weekly["week_start"]).dt.year.eq(year)
+        ]
 
-        ticks = village_weeks["week_start"].iloc[::4]
+        for experiment in EXPERIMENT_FAMILIES:
+            series = year_experiments.loc[
+                year_experiments["experiment"].eq(experiment)
+            ].sort_values("week_start")
+            if series.empty:
+                continue
+            ax.plot(
+                series["week_start"],
+                series["mean_trials_per_living_rat_day"],
+                color=palette[experiment],
+                linewidth=1.8,
+                marker="o",
+                markersize=2.5,
+                label=experiment,
+            )
+
+        ax.set_ylabel("Trials per living rat per day")
+        ax.set_ylim(bottom=0)
+        ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
+        # Show every observed week, rather than only one tick every four weeks.
+        ticks = village_weeks["week_start"]
         ax.set_xticks(ticks)
-        ax.set_xticklabels(pd.to_datetime(ticks).dt.strftime("%d %b"), rotation=45, ha="right", fontsize=8)
+        ax.set_xticklabels(
+            pd.to_datetime(ticks).dt.strftime("%d %b"),
+            rotation=90,
+            fontsize=7,
+        )
         ax.set_xlabel("Week starting Monday")
-        ax.yaxis.set_major_locator(MultipleLocator(10 if kind == "occupancy" else 20))
+        ax.yaxis.set_major_locator(MultipleLocator(10))
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
-    legend_items = {}
-    for ax in axes:
-        handles, labels = ax.get_legend_handles_labels()
-        for handle, label in zip(handles, labels):
-            legend_items.setdefault(label, handle)
-    handles = list(legend_items.values())
-    labels = list(legend_items)
+    from matplotlib.lines import Line2D
+
+    legend_handles = [
+        Line2D([0], [0], color=palette[family], linewidth=2, label=family)
+        for family in EXPERIMENT_FAMILIES
+    ]
     fig.suptitle(
-        f"{village}: weekly {'trial averages by experiment' if kind == 'trials' else 'occupancy'}",
+        f"{village}: weekly trial averages by experiment",
         fontsize=15,
         weight="bold",
     )
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.965),
-               ncol=min(6, max(1, len(labels))), frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.97),
+        ncol=4,
+        frameon=False,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -288,14 +284,18 @@ def generate(data):
     # after it ended are not zero-trial experiment days.
     frame["experiment"] = _experiment_family(frame)
     category_daily = (
-        frame.groupby(["village", "experiment", "day"])
+        frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
+        .groupby(["village", "experiment", "day"])
         .size().rename("total_trials").reset_index()
     )
     experiment_weekly_parts = []
     for village, village_days in daily.groupby("village", sort=True):
-        categories = sorted(
-            category_daily.loc[category_daily["village"].eq(village), "experiment"].unique()
-        )
+        categories = [
+            family for family in EXPERIMENT_FAMILIES
+            if family in set(category_daily.loc[
+                category_daily["village"].eq(village), "experiment"
+            ])
+        ]
         if not categories:
             continue
         counts = category_daily.loc[category_daily["village"].eq(village)]
@@ -385,7 +385,6 @@ def generate(data):
     with PdfPages(pdf_path) as pdf:
         for village, subset in weekly.groupby("village", sort=True):
             subset = subset.sort_values("week_start").reset_index(drop=True)
-            _draw_year_facets(pdf, subset, experiment_weekly, village, "trials")
-            _draw_year_facets(pdf, subset, experiment_weekly, village, "occupancy")
+            _draw_year_facets(pdf, subset, experiment_weekly, village)
     return pdf_path, csv_path
 
