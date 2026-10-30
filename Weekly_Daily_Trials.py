@@ -24,7 +24,7 @@ def generate(data):
     if frame.empty:
         return None, None
 
-    village_numbers = frame["ratvillage"].astype(str).str.extract(r"(\d+)$", expand=False)
+    village_numbers = frame["ratvillage"].astype(str).str.extract(r"([0-9]+)$", expand=False)
     if village_numbers.isna().any():
         raise ValueError("Cannot determine village number for some trial rows.")
     frame["village"] = "RV" + village_numbers
