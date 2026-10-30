@@ -4,8 +4,8 @@ Python project for preparing Rat Village data and generating the daily report fi
 
 ## Configure
 
-1. Set `DATA_DIRECTORY` in `settings.py` to the folder shown as `H:\\NAS`. The script reads `early_training*.csv`, `global*.csv`, and RV1 `global_trials_wm*.csv` from each village's `global_trials_rvN` folder. CSV files use the semicolon separator.
-2. Set `Working_Memory`, `Probability`, and `Cognitive_bias` to `True` or `False`. These switches enable or skip their task-specific PDFs. Working Memory is collected only in RV1; set its RV1 path before enabling it.
+1. Set `DATA_DIRECTORY` in `settings.py` to the folder shown as `H:\NAS`. The script reads `early_training*.csv`, `global*.csv`, and RV1 `global_trials_wm*.csv` from each village's `global_trials_rvN` folder. CSV files use the semicolon separator.
+2. Set `Working_Memory`, `Probability`, and `Cognitive_bias` to `True` or `False`. These switches enable or skip their task-specific PDFs. Working Memory is collected only in RV1; set `Working_Memory = True` to include its report.
 3. Review `EXCLUDED_SUBJECTS` and optionally set `INACTIVE_HOURS_FILE`.
 4. The settings point to `events_rv1`, `events_rv2`, and `events_rv3`, and to `environment_rv2` and `environment_rv3`. Every `events*.csv` and supported `environment*` CSV/Excel file in those folders is loaded. RV1 has no environment folder configured.
 5. Set `OUTPUT_DIRECTORY` and `REPORT_DIRECTORY` to writable NAS folders.
@@ -19,7 +19,7 @@ python -m pip install pandas openpyxl matplotlib
 python main.py
 ```
 
-During preparation, environment exports are merged per village into `H:\\NAS\\environment\\environment_rv2.csv` and `environment_rv3.csv`. CSV and Excel files are supported. Columns are aligned by name, timestamps are validated and sorted, and exact duplicate rows are removed. Source files are kept and source folders are never written to. Rows with the same timestamp but different readings are retained.
+During preparation, environment exports are merged per village into `H:\NAS\\environment\\environment_rv2.csv` and `environment_rv3.csv`. CSV and Excel files are supported. Columns are aligned by name, timestamps are validated and sorted, and exact duplicate rows are removed. Source files are kept and source folders are never written to. Rows with the same timestamp but different readings are retained.
 
 `main.py` is the master script. Run `python main.py` to prepare the all-column trial dataset and generate Early Training, Working Memory (when enabled), Cognitive Bias, Probability, Status and Activity, Trials per Task, weekly daily-trial reports, and period-comparison reports. Prepared files go to the repository's `output` and `reports` folders.
 
