@@ -1193,6 +1193,82 @@ def _attach_entry_exit_times(data: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+
+def add_living_subjects(data: pd.DataFrame, rat_health_path: Path | None = None) -> pd.DataFrame:
+    """Attach living experimental population and export a complete daily audit.
+
+    Population comes exclusively from rat_details, never observed trial subjects
+    or EXCLUDED_SUBJECTS. A rat counts from its experimental start date until
+    (but not including) its recorded death date.
+    """
+    workbook = Path(rat_health_path if rat_health_path is not None else settings.RAT_HEALTH_FILE)
+    if not workbook.is_file():
+        raise FileNotFoundError(f"Rat health workbook not found: {workbook}")
+    details = pd.read_excel(workbook, sheet_name=settings.RAT_DETAILS_SHEET)
+    needed = {"ratvillage_number", "rat_id", "exp_start_date", "passed_away_date"}
+    if not needed.issubset(details.columns):
+        raise ValueError(f"rat_details missing columns: {sorted(needed - set(details.columns))}")
+    details = details.copy()
+    details["rat_id"] = details["rat_id"].astype("string").str.strip().str.lower()
+    details["ratvillage_number"] = pd.to_numeric(details["ratvillage_number"], errors="coerce")
+    details = details.loc[details["ratvillage_number"].isin([1, 2, 3])
+                          & details["rat_id"].notna()
+                          & details["rat_id"].ne("")].copy()
+    if details.empty:
+        raise ValueError("No named RV1/RV2/RV3 rats found in rat_details")
+    if details.duplicated(["ratvillage_number", "rat_id"]).any():
+        raise ValueError("Duplicate village/rat_id in rat_details")
+    for field in ("exp_start_date", "passed_away_date"):
+        details[field] = pd.to_datetime(details[field], errors="coerce").dt.date
+    if details["exp_start_date"].isna().any():
+        invalid = details.loc[details["exp_start_date"].isna(), "rat_id"].tolist()
+        raise ValueError(f"Missing/invalid exp_start_date for: {invalid}")
+    bad = details["passed_away_date"].notna() & (
+        details["passed_away_date"] < details["exp_start_date"])
+    if bad.any():
+        raise ValueError(f"Death before experiment start: {details.loc[bad, 'rat_id'].tolist()}")
+    if "datetime" not in data or "ratvillage" not in data:
+        raise ValueError("Living-subject calculation requires datetime and ratvillage")
+    result = data.copy()
+    local_dates = pd.to_datetime(result["datetime"], errors="coerce", utc=True).dt.tz_convert(
+        settings.REPORT_TIMEZONE).dt.date
+    village = pd.to_numeric(result["ratvillage"].astype("string").str.extract(
+        r"(\\d+)$", expand=False), errors="coerce")
+    if local_dates.isna().any() or village.isna().any():
+        raise ValueError("Cannot attach living subjects to trial rows with invalid village/datetime")
+    result["_living_day"] = local_dates
+    result["_living_village"] = village.astype(int)
+    first = min(min(local_dates), details["exp_start_date"].min())
+    last = max(local_dates)
+    calendar = pd.DataFrame({"date": pd.date_range(first, last, freq="D").date})
+    pieces = []
+    for rv, rats in details.groupby("ratvillage_number"):
+        days = calendar.copy()
+        days["ratvillage"] = int(rv)
+        starts = pd.to_datetime(rats["exp_start_date"]).to_numpy(dtype="datetime64[D]")
+        deaths = pd.to_datetime(rats["passed_away_date"]).to_numpy(dtype="datetime64[D]")
+        day_values = pd.to_datetime(days["date"]).to_numpy(dtype="datetime64[D]")
+        active = (day_values[:, None] >= starts[None, :]) & (
+            pd.isna(deaths)[None, :] | (day_values[:, None] < deaths[None, :]))
+        days["number_of_living_subjects"] = active.sum(axis=1).astype(int)
+        pieces.append(days)
+    population = pd.concat(pieces, ignore_index=True)
+    audit_dir = Path(settings.OUTPUT_DIRECTORY)
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audit_dir / "Living_Subjects_Daily.csv"
+    population.to_csv(audit_path, index=False, encoding="utf-8-sig")
+    result = result.merge(
+        population.rename(columns={"date": "_living_day",
+                                   "ratvillage": "_living_village"}),
+        on=["_living_village", "_living_day"], how="left", validate="many_to_one")
+    if result["number_of_living_subjects"].isna().any():
+        raise ValueError("Missing living population for one or more trial dates")
+    result["number_of_living_subjects"] = result["number_of_living_subjects"].astype("int64")
+    result = result.drop(columns=["_living_day", "_living_village"])
+    LOGGER.info("Added living population from %s; saved daily audit to %s",
+                workbook, audit_path)
+    return result
+
 def prepare_data(apply_filters: bool = False) -> pd.DataFrame:
     """Merge environment exports, prepare trial rows, and add session data."""
     merge_environment_files()
@@ -1201,7 +1277,8 @@ def prepare_data(apply_filters: bool = False) -> pd.DataFrame:
     sessions = _build_sessions(events)
     sessions = _attach_environment_to_sessions(sessions)
     data = _attach_sessions(data, sessions, has_events=not events.empty)
-    return _attach_entry_exit_times(data)
+    data = _attach_entry_exit_times(data)
+    return add_living_subjects(data)
 
 
 def main() -> None:
