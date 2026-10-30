@@ -21,12 +21,7 @@ def _experiment_family(frame):
 
     family = pd.Series("Other", index=frame.index, dtype="string")
     family.loc[
-        source_key.str.startswith("early_training")
-        | task_key.str.contains("earlytraining", na=False)
-    ] = "Early Training"
-    family.loc[
-        source_key.str.startswith("working_memory")
-        | task_key.str.contains("workingmemory", na=False)
+        task_key.str.contains("workingmemory", na=False)
         | task_key.str.startswith("wm", na=False)
     ] = "Working Memory"
     family.loc[
@@ -37,6 +32,12 @@ def _experiment_family(frame):
         task_key.str.contains("probability|weber", na=False)
         | task_key.str.startswith("pi", na=False)
     ] = "Probability"
+    # Source files take precedence for the separate Early Training and WM exports.
+    family.loc[
+        source_key.str.startswith("early_training")
+        | task_key.str.contains("earlytraining", na=False)
+    ] = "Early Training"
+    family.loc[source_key.str.startswith("working_memory")] = "Working Memory"
     return family
 
 
