@@ -1039,13 +1039,11 @@ def _event_task_key(description: Any) -> str:
 
 
 def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
-    """Pair task START/END events and the physical RETURNING HOME exit action."""
     if events.empty:
         return pd.DataFrame(columns=[
             "ratvillage", "subject_match", "event_session_id", "event_session_task",
-            "datetime_start_session", "datetime_end_session", "datetime_box_exit",
-            "event_session_status", "box_exit_status", "event_temperature",
-            "event_humidity", "_next_session_start",
+            "datetime_start_session", "datetime_end_session", "event_session_status",
+            "event_temperature", "event_humidity", "_next_session_start",
         ])
     pseudo_subjects = {str(value).lower() for value in settings.EVENT_NON_ANIMAL_SUBJECTS}
     session_events = events.loc[
@@ -1068,9 +1066,7 @@ def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
                     "event_session_id": counter, "event_session_task": task,
                     "datetime_start_session": row.event_time_utc,
                     "datetime_end_session": pd.NaT,
-                    "datetime_box_exit": pd.NaT,
                     "event_session_status": "missing_end",
-                    "box_exit_status": "missing_returning_home",
                 }
                 sessions.append(item)
                 opened.append(item)
@@ -1093,35 +1089,6 @@ def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
                     else "end_task_label_mismatch"
                 )
                 opened.remove(matched)
-
-    # Academy logs the physical box departure as an ACTION for the animal.
-    # Assign each "Returning home" action to the latest preceding task START
-    # for that subject; task END remains a separate task boundary.
-    returning_home = events.loc[
-        events["event_type"].eq("ACTION")
-        & events["event_description"].astype("string").str.strip().str.casefold().eq("returning home")
-        & ~events["subject_match"].isin(pseudo_subjects)
-        & events["subject_match"].ne("")
-        & events["subject_match"].ne("<NA>")
-    ]
-    unmatched_returning_home = 0
-    for (village, subject), group in returning_home.groupby(["ratvillage", "subject_match"], sort=False):
-        for row in group.sort_values("event_time_utc", kind="stable").itertuples(index=False):
-            preceding = [
-                item for item in sessions
-                if item["ratvillage"] == int(village)
-                and item["subject_match"] == subject
-                and item["datetime_start_session"] <= row.event_time_utc
-            ]
-            if not preceding:
-                unmatched_returning_home += 1
-                continue
-            matched = max(preceding, key=lambda item: item["datetime_start_session"])
-            if pd.notna(matched["datetime_box_exit"]):
-                unmatched_returning_home += 1
-                continue
-            matched["datetime_box_exit"] = row.event_time_utc
-            matched["box_exit_status"] = "matched_returning_home"
 
     result = pd.DataFrame(sessions)
     if result.empty:
@@ -1165,16 +1132,7 @@ def _build_sessions(events: pd.DataFrame) -> pd.DataFrame:
         result.at[index, "event_humidity"] = humidity
     if orphan_ends:
         LOGGER.warning("Ignored %s END events without an unambiguous matching START.", orphan_ends)
-    if unmatched_returning_home:
-        LOGGER.warning(
-            "Could not match %s Returning home action(s) to a task session.",
-            unmatched_returning_home,
-        )
-    LOGGER.info(
-        "Built %s task session windows from Academy START/END events; %s have a Returning home exit.",
-        len(result),
-        int(result["datetime_box_exit"].notna().sum()),
-    )
+    LOGGER.info("Built %s animal session windows from Academy START/END events.", len(result))
     return result
 
 
@@ -1190,7 +1148,7 @@ def _attach_sessions(data: pd.DataFrame, sessions: pd.DataFrame, has_events: boo
         raise ValueError(f"Session output columns already exist: {sorted(collisions)}")
     result = data.copy()
     for column in output_columns:
-        if column in ("datetime_start_session", "datetime_end_session", "datetime_box_exit"):
+        if column in ("datetime_start_session", "datetime_end_session"):
             result[column] = pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns, UTC]")
         elif column in ("event_temperature", "event_humidity", "env_time_from_session_start_seconds") or (
             column.startswith("env_") and column not in ("env_match_status", "env_timestamp")
@@ -1244,7 +1202,7 @@ def _attach_sessions(data: pd.DataFrame, sessions: pd.DataFrame, has_events: boo
         chosen_sessions = candidates.iloc[selected[valid]]
         for column in output_columns:
             values = chosen_sessions[column]
-            if column in ("datetime_start_session", "datetime_end_session", "datetime_box_exit", "env_timestamp"):
+            if column in ("datetime_start_session", "datetime_end_session", "env_timestamp"):
                 values = pd.to_datetime(values, utc=True, errors="coerce")
                 result.loc[chosen_rows, column] = values.array
             else:
@@ -1253,7 +1211,7 @@ def _attach_sessions(data: pd.DataFrame, sessions: pd.DataFrame, has_events: boo
 
 
 def _attach_entry_exit_times(data: pd.DataFrame) -> pd.DataFrame:
-    """Attach task entry and physical return-home exit times to trial rows."""
+    """Copy matched Academy START/END session times onto each trial row."""
     result = data.copy()
     utc_dtype = "datetime64[ns, UTC]"
     if "datetime_start_session" in result:
@@ -1262,9 +1220,9 @@ def _attach_entry_exit_times(data: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         result["entry_time"] = pd.Series(pd.NaT, index=result.index, dtype=utc_dtype)
-    if "datetime_box_exit" in result:
+    if "datetime_end_session" in result:
         result["exit_time"] = pd.to_datetime(
-            result["datetime_box_exit"], errors="coerce", utc=True
+            result["datetime_end_session"], errors="coerce", utc=True
         )
     else:
         result["exit_time"] = pd.Series(pd.NaT, index=result.index, dtype=utc_dtype)
@@ -1276,15 +1234,18 @@ def _attach_entry_exit_times(data: pd.DataFrame) -> pd.DataFrame:
     result["time_spent_in_box"] = np.nan
     result.loc[valid_duration, "time_spent_in_box"] = duration_minutes.loc[valid_duration]
 
-    result["entry_exit_match_status"] = result.get(
-        "box_exit_status", pd.Series("no_returning_home_event", index=result.index)
+    session_status = result.get(
+        "event_session_status", pd.Series("no_event_match", index=result.index)
     ).astype("string")
+    result["entry_exit_match_status"] = session_status.replace({
+        "matched_end": "matched_start_and_end",
+        "missing_end": "matched_start_only",
+    })
     LOGGER.info(
-        "Attached START and Returning home times to trial rows; %s rows have both times.",
+        "Copied Academy START/END times to trial rows; %s rows have both times.",
         int(valid_duration.sum()),
     )
     return result
-
 
 
 def add_living_subjects(data: pd.DataFrame, rat_health_path: Path | None = None) -> pd.DataFrame:
