@@ -433,11 +433,22 @@ def _draw_cb_pages(pdf: PdfPages, data: pd.DataFrame) -> None:
                     width = 0.36
                     for tone_idx, tone in enumerate(("Low", "High")):
                         values = rows.loc[rows["_tone"].eq(tone)].set_index("block_number")["success"].reindex(blocks)
+                        # Matplotlib cannot plot pandas.NA; convert missing values
+                        # to numpy.nan while keeping gaps in the plotted series.
+                        values = pd.to_numeric(values, errors="coerce").to_numpy(
+                            dtype=float, na_value=np.nan
+                        )
                         ax.bar(x + (tone_idx - 0.5) * width, values, width=width,
                                color=("#0072B2" if tone == "Low" else "#E69F00"), label=tone)
                     line_lookup = lrows.drop_duplicates("block_number").set_index("block_number").reindex(blocks)
-                    ax.plot(x, line_lookup["forced_pct_total"], color="#009E73", linewidth=1.4, marker="o", label="Forced %")
-                    ax.plot(x, line_lookup["touchoutside_pct_incorrect"], color="#CC79A7", linewidth=1.4,
+                    forced_values = pd.to_numeric(
+                        line_lookup["forced_pct_total"], errors="coerce"
+                    ).to_numpy(dtype=float, na_value=np.nan)
+                    outside_values = pd.to_numeric(
+                        line_lookup["touchoutside_pct_incorrect"], errors="coerce"
+                    ).to_numpy(dtype=float, na_value=np.nan)
+                    ax.plot(x, forced_values, color="#009E73", linewidth=1.4, marker="o", label="Forced %")
+                    ax.plot(x, outside_values, color="#CC79A7", linewidth=1.4,
                             linestyle="dotted", marker="o", label="Outside %")
                     ax.axhline(0.7, color="#444444", linewidth=0.8)
                     ax.axhline(0.5, color="#777777", linewidth=0.8, linestyle="dotted")
