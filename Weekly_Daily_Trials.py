@@ -205,7 +205,6 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
-        ax.legend(loc="upper left", frameon=False)
     fig.suptitle(
         f"{village}: weekly average trials per rat",
         fontsize=15,
