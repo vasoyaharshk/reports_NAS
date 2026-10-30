@@ -352,8 +352,8 @@ def generate(data):
     )
     daily["week_start"] = daily["day"] - pd.to_timedelta(daily["day"].dt.weekday, unit="D")
 
-    # Rat-day weighting (Method B). Averages are total activity divided by
-    # the sum of living subjects across days, not an unweighted mean of days.
+    # Occupancy denominators use total living-subject-days across the week.
+    # Trial averages below use Method 1: average each rat's daily rate equally.
     weekly = (daily.groupby(["village", "week_start"], as_index=False)
               .agg(total_trials=("total_trials", "sum"),
                    active_rat_hours=("active_rat_hours", "sum"),
