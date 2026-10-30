@@ -505,8 +505,6 @@ def generate(data):
         rat_week.groupby(["village", "week_start"], as_index=False)
         .agg(
             mean_trials_per_subject_day=("subject_daily_average", "mean"),
-            min_trials_per_subject_day=("subject_daily_average", "min"),
-            max_trials_per_subject_day=("subject_daily_average", "max"),
             subjects_with_trials=("subject", "nunique"),
         )
     )
@@ -516,13 +514,49 @@ def generate(data):
         how="left",
         validate="one_to_one",
     )
-    for column in (
-        "mean_trials_per_subject_day",
-        "min_trials_per_subject_day",
-        "max_trials_per_subject_day",
-        "subjects_with_trials",
-    ):
-        weekly[column] = weekly[column].fillna(0)
+    weekly["mean_trials_per_subject_day"] = weekly["mean_trials_per_subject_day"].fillna(0)
+    weekly["subjects_with_trials"] = weekly["subjects_with_trials"].fillna(0)
+
+    # Preserve the previous minimum and maximum: the lowest and highest
+    # individual rat-day trial counts, including zero when a living rat had
+    # no trials on a day.
+    extremes = (
+        rat_daily.assign(
+            week_start=rat_daily["day"]
+            - pd.to_timedelta(rat_daily["day"].dt.weekday, unit="D")
+        )
+        .groupby(["village", "week_start"])["trials"]
+        .agg(max_trials_per_subject_day="max", observed_min="min")
+        .reset_index()
+    )
+    weekly = weekly.merge(
+        extremes,
+        on=["village", "week_start"],
+        how="left",
+        validate="one_to_one",
+    )
+    observed_counts = (
+        rat_daily.groupby(["village", "day"]).size()
+        .rename("observed_rats").reset_index()
+    )
+    missing_days = daily.merge(
+        observed_counts, on=["village", "day"], how="left"
+    )
+    missing_days["has_zero"] = (
+        missing_days["living_subjects"] > missing_days["observed_rats"].fillna(0)
+    )
+    zero_weeks = (
+        missing_days.groupby(["village", "week_start"])["has_zero"]
+        .any().rename("has_zero").reset_index()
+    )
+    weekly = weekly.merge(
+        zero_weeks, on=["village", "week_start"], how="left", validate="one_to_one"
+    )
+    weekly["min_trials_per_subject_day"] = np.where(
+        weekly["has_zero"], 0, weekly["observed_min"].fillna(0)
+    )
+    weekly["max_trials_per_subject_day"] = weekly["max_trials_per_subject_day"].fillna(0)
+    weekly = weekly.drop(columns=["observed_min", "has_zero"])
     weekly = weekly.sort_values(["village", "week_start"])
 
     directory = Path(settings.REPORT_DIRECTORY)
