@@ -4,6 +4,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import Cognitive_bias
+import Early_Training
+import Probability
+import Working_Memory_Report
 import Period_Comparison
 import Status_Activity_Report
 import Trials_Per_Task
@@ -23,9 +27,14 @@ def main() -> None:
     data.to_csv(prepared_path, sep=settings.CSV_SEPARATOR, index=False, encoding="utf-8-sig")
     LOGGER.info("Saved prepared trial dataset: %s (%s rows)", prepared_path, len(data))
 
-    # The combined report contains current status, recent daily trials,
-    # trial-hour occupancy, and the configured Cognitive Bias plots.
-    outputs = [Status_Activity_Report.generate(data)]
+    # Generate task-specific PDFs and the all-task activity reports.
+    outputs = [
+        Early_Training.generate(data),
+        Working_Memory_Report.generate(data),
+        Cognitive_bias.generate(data),
+        Probability.generate(data),
+        Status_Activity_Report.generate(data),
+    ]
     trials_pdf, trials_csv = Trials_Per_Task.generate(data)
     period_workbook = Period_Comparison.generate(data)
     weekly_pdf, weekly_csv = Weekly_Daily_Trials.generate(data)
