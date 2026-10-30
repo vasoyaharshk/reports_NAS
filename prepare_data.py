@@ -16,7 +16,7 @@ import settings
 
 LOGGER = logging.getLogger("reports_nas.prepare_data")
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xls"}
-MERGED_NAME_PATTERN = re.compile(r"^environment_rv[123]_\d{8}_\d{6}\.csv$", re.I)
+MERGED_NAME_PATTERN = re.compile(r"^environment_rv[123](?:_\d{8}_\d{6})?\.csv$", re.I)
 ENVIRONMENT_SESSION_COLUMNS = (
     "env_timestamp", "env_time_from_session_start_seconds", "env_match_status",
 )
@@ -38,6 +38,40 @@ def _read_source(path: Path, village: int, dataset: str) -> pd.DataFrame:
     frame["ratvillage"] = village
     frame["dataset"] = f"{dataset}_rv{village}"
     return frame
+
+
+def _discover_trial_sources(value: Any, village: int, dataset: str) -> list[Path]:
+    """Resolve one configured trial folder to all matching CSV exports."""
+    if value is None:
+        return []
+    configured = Path(value)
+    if configured.is_file():
+        return [configured]
+    if not configured.is_dir():
+        raise FileNotFoundError(
+            f"Input folder not found for RV{village} ({dataset}): {configured}. "
+            "Update VILLAGE_INPUTS in settings.py."
+        )
+    prefixes = {
+        "early_training": ("early_training",),
+        "global_trials_pi": ("global",),
+        "working_memory": ("global_trials_wm",),
+    }
+    matching_prefixes = prefixes[dataset]
+    paths = sorted(
+        path for path in configured.iterdir()
+        if path.is_file()
+        and path.suffix.lower() == ".csv"
+        and path.name.lower().startswith(matching_prefixes)
+        and not (dataset == "global_trials_pi" and path.name.lower().startswith("global_trials_wm"))
+        and not path.name.startswith(".")
+    )
+    if not paths:
+        raise FileNotFoundError(
+            f"No {dataset} CSV files found for RV{village} in {configured}; "
+            f"expected filenames starting with {', '.join(matching_prefixes)}."
+        )
+    return paths
 
 
 def _source_column_class(column: pd.Series) -> str:
@@ -79,7 +113,7 @@ def _harmonise_source_types(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
 
 
 def load_all_villages() -> pd.DataFrame:
-    """Load configured early-training, global-trial, and optional WM exports."""
+    """Load every matching early-training, global-trial, and optional WM export."""
     frames: list[pd.DataFrame] = []
     source_order = (
         ("early_training", (3, 2, 1)),
@@ -92,36 +126,32 @@ def load_all_villages() -> pd.DataFrame:
                 raise ValueError(
                     f"VILLAGE_INPUTS[{village}] must define '{dataset}'."
                 )
-            path = inputs[dataset]
-            # The current source set has only WM data for RV1; RV1 early
-            # training and probability global trials are therefore optional.
-            if path is None and village == 1:
-                LOGGER.info("No RV1 %s file configured; skipping that source.", dataset)
+            configured = inputs[dataset]
+            if configured is None and village == 1:
+                LOGGER.info("No RV1 %s folder configured; skipping that source.", dataset)
                 continue
-            if path is None:
+            if configured is None:
                 raise ValueError(f"VILLAGE_INPUTS[{village}]['{dataset}'] is required.")
-            frames.append(_read_source(Path(path), village, dataset))
+            paths = _discover_trial_sources(configured, village, dataset)
+            frames.extend(_read_source(path, village, dataset) for path in paths)
+            LOGGER.info("Loaded %s %s file(s) for RV%s.", len(paths), dataset, village)
 
     if not frames:
         raise ValueError("No trial input files are configured.")
 
-    # Include RV1 Working Memory whenever its source exists, even if the
-    # Working_Memory report is switched off. This keeps the independent
-    # trials-per-task output complete. Enabling the report requires the source.
-    wm_path = settings.VILLAGE_INPUTS.get(1, {}).get("working_memory")
-    if wm_path is not None and Path(wm_path).is_file():
-        frames.append(_read_source(Path(wm_path), 1, "working_memory"))
+    wm_directory = settings.VILLAGE_INPUTS.get(1, {}).get("working_memory")
+    if wm_directory is not None:
+        wm_paths = _discover_trial_sources(wm_directory, 1, "working_memory")
+        frames.extend(_read_source(path, 1, "working_memory") for path in wm_paths)
+        LOGGER.info("Loaded %s Working Memory file(s) for RV1.", len(wm_paths))
     elif settings.Working_Memory:
         raise ValueError(
-            "Working_Memory is enabled, but its RV1 source is missing. Set the working_memory path in settings.py."
+            "Working_Memory is enabled, but its RV1 folder is missing. "
+            "Set the working_memory path in settings.py."
         )
 
-    # R's compare_column_types()/harmonise_column_types() convert columns with
-    # inconsistent source types to character before bind_rows().
     frames = _harmonise_source_types(frames)
-    # sort=False preserves source column order and adds columns present in other files.
-    combined = pd.concat(frames, ignore_index=True, sort=False)
-    return combined
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def _parse_epoch_or_datetime(values: pd.Series) -> pd.Series:
@@ -580,150 +610,114 @@ def _timestamp_column(frame: pd.DataFrame, source: Path) -> str:
     return matches[0]
 
 
-def _merged_output_path(directory: Path, village: int) -> Path:
-    local_now = datetime.now(ZoneInfo("Europe/Madrid"))
-    stamp = local_now.strftime("%Y%m%d_%H%M%S")
-    output = directory / f"environment_rv{village}_{stamp}.csv"
-    if output.exists():
-        raise FileExistsError(f"Refusing to overwrite existing merged file: {output}")
-    return output
-
-
-def _prepare_merge(directory: Path, village: int) -> dict | None:
-    inputs = _discover_inputs(directory, village)
-    if not inputs:
-        return None
-    existing_merged = [path for path in inputs if MERGED_NAME_PATTERN.match(path.name)]
-    if len(inputs) == 1 and existing_merged:
-        LOGGER.info("RV%s already has one merged file; nothing to do.", village)
-        return None
-
-    frames: list[pd.DataFrame] = []
-    timestamp_name: str | None = None
-    union_columns: list[str] = []
-    input_rows: dict[str, int] = {}
-
-    for path in inputs:
-        frame = _read_input(path)
-        current_timestamp_name = _timestamp_column(frame, path)
-        if timestamp_name is None:
-            timestamp_name = current_timestamp_name
-        elif current_timestamp_name != timestamp_name:
-            if timestamp_name in frame.columns:
-                raise ValueError(f"Ambiguous timestamp columns in {path.name}.")
-            frame = frame.rename(columns={current_timestamp_name: timestamp_name})
-            current_timestamp_name = timestamp_name
-        for column in frame.columns:
-            if column not in union_columns:
-                union_columns.append(column)
-        if "__merge_timestamp" in frame.columns:
-            raise ValueError(f"Reserved helper column '__merge_timestamp' found in {path.name}.")
-        frame["__merge_timestamp"] = pd.to_datetime(
-            frame[current_timestamp_name], errors="coerce", format="mixed"
-        )
-        invalid = frame["__merge_timestamp"].isna()
-        if invalid.any():
-            examples = frame.loc[invalid, current_timestamp_name].head(5).tolist()
-            raise ValueError(
-                f"RV{village} has {int(invalid.sum())} invalid timestamps in {path.name}; "
-                f"examples={examples}. No files were deleted."
-            )
-        input_rows[path.name] = len(frame)
-        frames.append(frame)
-
-    assert union_columns and timestamp_name is not None
-    for index, frame in enumerate(frames):
-        for column in union_columns:
-            if column not in frame.columns:
-                frame[column] = ""
-        frames[index] = frame.loc[:, union_columns + ["__merge_timestamp"]]
-    merged = pd.concat(frames, ignore_index=True, sort=False)
-    merged = merged.sort_values("__merge_timestamp", kind="stable").reset_index(drop=True)
-    merged = merged.loc[:, union_columns]
-    if len(merged) != sum(input_rows.values()):
-        raise RuntimeError(f"RV{village} row count changed while combining inputs.")
-
-    output = _merged_output_path(directory, village)
-    temporary = directory / f".{output.name}.tmp"
-    return {
-        "village": village,
-        "directory": directory,
-        "inputs": inputs,
-        "input_rows": input_rows,
-        "rows": merged,
-        "row_count": len(merged),
-        "columns": union_columns,
-        "timestamp_column": timestamp_name,
-        "output": output,
-        "temporary": temporary,
-    }
-
-
-def _write_and_verify(plan: dict) -> None:
-    frame = plan["rows"]
-    temporary: Path = plan["temporary"]
-    frame.to_csv(
-        temporary, index=False, sep=";", encoding="utf-8-sig", lineterminator="\n"
-    )
-    reread = pd.read_csv(
-        temporary, sep=";", dtype="string", keep_default_na=False,
-        encoding="utf-8-sig", low_memory=False,
-    )
-    if list(reread.columns) != plan["columns"]:
-        raise ValueError(f"RV{plan['village']} output header verification failed.")
-    if len(reread) != plan["row_count"]:
-        raise ValueError(f"RV{plan['village']} output row count verification failed.")
-    if not reread.equals(frame.reset_index(drop=True)):
-        raise ValueError(
-            f"RV{plan['village']} output values did not round-trip exactly; "
-            "source files have not been deleted."
-        )
-
-
 def merge_environment_files() -> list[Path]:
-    """Merge configured villages independently; delete inputs only after verification."""
-    plans = []
+    """Merge each village's environment inputs into Data/environment; preserve source files."""
+    output_directory = Path(settings.ENVIRONMENT_MERGED_DIRECTORY)
+    outputs: list[Path] = []
+
     for village in (1, 2, 3):
-        directory_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
-        if directory_value is None:
+        source_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
+        if source_value is None:
             continue
-        directory = Path(directory_value)
-        plan = _prepare_merge(directory, village)
-        if plan is not None:
-            plans.append(plan)
+        source_directory = Path(source_value)
+        if not source_directory.is_dir():
+            LOGGER.warning("RV%s environment folder is unavailable: %s", village, source_directory)
+            continue
 
-    # Prepare and round-trip verify every village before committing any output.
-    try:
-        for plan in plans:
-            _write_and_verify(plan)
-        for plan in plans:
-            plan["temporary"].replace(plan["output"])
-    except Exception:
-        for plan in plans:
-            plan["temporary"].unlink(missing_ok=True)
-        raise
+        inputs = _discover_inputs(source_directory, village)
+        if len(inputs) > 1:
+            raw_inputs = [p for p in inputs if not MERGED_NAME_PATTERN.match(p.name)]
+            if raw_inputs:
+                inputs = raw_inputs
+        output = output_directory / f"environment_rv{village}.csv"
 
-    outputs = [plan["output"] for plan in plans]
-    for plan in plans:
-        duplicate_rows = int(plan["rows"].duplicated(keep=False).sum())
-        duplicate_timestamps = int(
-            plan["rows"][plan["timestamp_column"]].duplicated(keep=False).sum()
+        if not inputs:
+            if output.is_file():
+                outputs.append(output)
+                LOGGER.info("No new RV%s environment inputs; reusing %s.", village, output)
+            else:
+                LOGGER.info("No environment input files for RV%s in %s.", village, source_directory)
+            continue
+
+        resolved_output = output_directory.resolve()
+        resolved_source = source_directory.resolve()
+        if resolved_output == resolved_source or resolved_source in resolved_output.parents:
+            raise ValueError(
+                f"Merged environment output folder {output_directory} must be outside "
+                f"the RV{village} source folder {source_directory}; source folders are read only."
+            )
+
+        frames: list[pd.DataFrame] = []
+        columns: list[str] = []
+        for path in inputs:
+            frame = _read_input(path)
+            timestamp_name = _timestamp_column(frame, path)
+            if timestamp_name != "timestamp":
+                if "timestamp" in frame.columns:
+                    raise ValueError(f"Ambiguous timestamp columns in {path.name}.")
+                frame = frame.rename(columns={timestamp_name: "timestamp"})
+            if "__merge_timestamp" in frame.columns:
+                raise ValueError(f"Reserved helper column '__merge_timestamp' found in {path.name}.")
+            for column in frame.columns:
+                if column not in columns:
+                    columns.append(column)
+            frames.append(frame)
+
+        for frame in frames:
+            for column in columns:
+                if column not in frame.columns:
+                    frame[column] = pd.Series("", index=frame.index, dtype="string")
+                else:
+                    frame[column] = frame[column].astype("string")
+        merged = pd.concat([frame.loc[:, columns] for frame in frames], ignore_index=True, sort=False)
+        if merged.empty:
+            LOGGER.warning("RV%s environment inputs contain no rows.", village)
+            continue
+
+        merged["__merge_timestamp"] = pd.to_datetime(
+            merged["timestamp"], errors="coerce", format="mixed"
         )
+        invalid = merged["__merge_timestamp"].isna()
+        if invalid.any():
+            examples = merged.loc[invalid, "timestamp"].head(5).tolist()
+            raise ValueError(
+                f"RV{village} has {int(invalid.sum())} invalid environment timestamps; "
+                f"examples={examples}; files={[path.name for path in inputs]}"
+            )
+
+        before = len(merged)
+        merged = merged.drop_duplicates(subset=columns, keep="first")
+        removed_duplicates = before - len(merged)
+        merged = merged.sort_values("__merge_timestamp", kind="stable").reset_index(drop=True)
+        merged = merged.loc[:, columns]
+
+        output_directory.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_name(f".{output.name}.tmp")
+        try:
+            merged.to_csv(
+                temporary, index=False, sep=";", encoding="utf-8-sig", lineterminator="\n"
+            )
+            reread = pd.read_csv(
+                temporary, sep=";", dtype="string", keep_default_na=False,
+                encoding="utf-8-sig", low_memory=False,
+            )
+            if (
+                list(reread.columns) != columns
+                or len(reread) != len(merged)
+                or not reread.equals(merged.reset_index(drop=True))
+            ):
+                raise ValueError(f"RV{village} merged environment output verification failed.")
+            temporary.replace(output)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+        outputs.append(output)
         LOGGER.info(
-            "RV%s merged %s rows from %s files into %s; exact duplicate rows retained: %s; "
-            "repeated timestamps retained: %s",
-            plan["village"], plan["row_count"], len(plan["inputs"]),
-            plan["output"], duplicate_rows, duplicate_timestamps,
+            "RV%s merged %s files into %s (%s rows; removed %s exact duplicate rows). "
+            "Source files were retained.",
+            village, len(inputs), output, len(merged), removed_duplicates,
         )
 
-    if settings.DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE:
-        # Every merged output is committed and verified before any source is removed.
-        for plan in plans:
-            for source in plan["inputs"]:
-                source.unlink()
-            LOGGER.info("Removed %s source files for RV%s after verification.", len(plan["inputs"]), plan["village"])
-    else:
-        LOGGER.info("Input deletion is disabled in settings.py; all source files were kept.")
     return outputs
 
 
@@ -758,28 +752,14 @@ def _normalise_subject(value: Any) -> str:
 
 
 def _load_environment_data(village: int) -> pd.DataFrame | None:
-    """Load the consolidated sensor file for one village, if configured."""
-    directory_value = settings.ENVIRONMENT_DIRECTORIES.get(village)
-    if directory_value is None:
+    """Load the merged sensor file for one village from the project data folder."""
+    if settings.ENVIRONMENT_DIRECTORIES.get(village) is None:
         return None
-    directory = Path(directory_value)
-    if not directory.is_dir():
-        LOGGER.warning("RV%s environment directory is unavailable: %s", village, directory)
+    path = Path(settings.ENVIRONMENT_MERGED_DIRECTORY) / f"environment_rv{village}.csv"
+    if not path.is_file():
+        LOGGER.warning("No merged environment file for RV%s at %s.", village, path)
         return None
-    paths = sorted(directory.glob(f"environment_rv{village}_*.csv"))
-    if not paths:
-        LOGGER.warning(
-            "No merged environment file found for RV%s in %s; check the configured environment folder.",
-            village, directory,
-        )
-        return None
-    if len(paths) != 1:
-        raise ValueError(
-            f"Expected one merged environment file for RV{village}, found {len(paths)}: "
-            f"{[path.name for path in paths]}"
-        )
 
-    path = paths[0]
     frame = pd.read_csv(
         path, sep=";", dtype="string", keep_default_na=False,
         encoding="utf-8-sig", low_memory=False,
@@ -791,8 +771,6 @@ def _load_environment_data(village: int) -> pd.DataFrame | None:
     if len(timestamp_columns) != 1:
         raise ValueError(f"Merged RV{village} environment file must have one timestamp column: {path}")
 
-    # Physical temperature/humidity sensor columns are named with _C or _RH
-    # suffixes. control_C is a setpoint, not a sensor reading.
     sensor_columns = [
         column for column in frame.columns
         if re.search(r"_(?:C|RH)$", column, flags=re.IGNORECASE)
@@ -896,14 +874,25 @@ def _attach_environment_to_sessions(sessions: pd.DataFrame) -> pd.DataFrame:
 
 
 def _load_events() -> pd.DataFrame:
+    """Read every events CSV in each configured village folder."""
     pieces = []
     for village in (1, 2, 3):
-        for path in _as_path_list(settings.EVENT_FILES.get(village)):
-            if not path.is_file():
-                raise FileNotFoundError(f"Event file configured for RV{village} not found: {path}")
-            # Event descriptions can contain unquoted semicolons (for example,
-            # Academy status messages). Keep the first two and final fields,
-            # and join any intervening fields back into the description.
+        directory_value = settings.EVENT_DIRECTORIES.get(village)
+        if directory_value is None:
+            continue
+        directory = Path(directory_value)
+        if not directory.is_dir():
+            raise FileNotFoundError(f"Events folder configured for RV{village} not found: {directory}")
+        paths = sorted(
+            path for path in directory.iterdir()
+            if path.is_file()
+            and path.suffix.lower() == ".csv"
+            and path.name.lower().startswith("events")
+            and not path.name.startswith(".")
+        )
+        if not paths:
+            LOGGER.info("No events*.csv files found for RV%s in %s.", village, directory)
+        for path in paths:
             with path.open("r", encoding="utf-8-sig", newline="") as source:
                 reader = csv.reader(source, delimiter=";")
                 columns = next(reader, [])
@@ -924,6 +913,8 @@ def _load_events() -> pd.DataFrame:
             frame["ratvillage"] = village
             frame["event_source_file"] = path.name
             pieces.append(frame)
+        if paths:
+            LOGGER.info("Loaded %s event file(s) for RV%s.", len(paths), village)
     if not pieces:
         return pd.DataFrame()
     events = pd.concat(pieces, ignore_index=True)
