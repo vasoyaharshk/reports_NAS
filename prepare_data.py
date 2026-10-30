@@ -1233,7 +1233,7 @@ def add_living_subjects(data: pd.DataFrame, rat_health_path: Path | None = None)
     local_dates = pd.to_datetime(result["datetime"], errors="coerce", utc=True).dt.tz_convert(
         settings.REPORT_TIMEZONE).dt.date
     village = pd.to_numeric(result["ratvillage"].astype("string").str.extract(
-        r"(\\d+)$", expand=False), errors="coerce")
+        r"(\d+)$", expand=False), errors="coerce")
     if local_dates.isna().any() or village.isna().any():
         raise ValueError("Cannot attach living subjects to trial rows with invalid village/datetime")
     result["_living_day"] = local_dates
