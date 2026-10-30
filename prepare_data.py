@@ -112,6 +112,66 @@ def _harmonise_source_types(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
     return frames
 
 
+def _warn_on_rv1_working_memory_overlap(frames: list[pd.DataFrame]) -> None:
+    """Warn when RV1 WM trials occur in both global and WM exports.
+
+    Rows are preserved so the check never silently changes the source data.
+    """
+    global_frames = [
+        frame for frame in frames
+        if "dataset" in frame and frame["dataset"].eq("global_trials_pi_rv1").any()
+    ]
+    wm_frames = [
+        frame for frame in frames
+        if "dataset" in frame and frame["dataset"].eq("working_memory_rv1").any()
+    ]
+    if not global_frames or not wm_frames:
+        return
+
+    global_data = pd.concat(global_frames, ignore_index=True, sort=False)
+    wm_data = pd.concat(wm_frames, ignore_index=True, sort=False)
+    if "task" in global_data:
+        global_data = global_data.loc[global_data["task"].map(_task_family).eq("working_memory")]
+    if "task" in wm_data:
+        wm_data = wm_data.loc[wm_data["task"].map(_task_family).eq("working_memory")]
+
+    # Trial start is the stable identity shared by the two source exports.
+    required = {"subject", "task", "TRIAL_START"}
+    shared = set(global_data.columns) & set(wm_data.columns)
+    if not required.issubset(shared):
+        missing = sorted(required - shared)
+        LOGGER.warning(
+            "Could not check RV1 Working Memory overlap: shared identity columns "
+            "missing (%s).",
+            ", ".join(missing),
+        )
+        return
+
+    def identity(frame: pd.DataFrame) -> pd.Series:
+        start = _parse_epoch_or_datetime(frame["TRIAL_START"]).astype("string")
+        subject = frame["subject"].astype("string").str.strip().str.casefold()
+        task = frame["task"].astype("string").str.strip().str.casefold()
+        return subject.fillna("<NA>") + "|" + task.fillna("<NA>") + "|" + start.fillna("<NA>")
+
+    global_keys = set(identity(global_data))
+    wm_keys = identity(wm_data)
+    overlap = wm_keys.isin(global_keys) & wm_data["TRIAL_START"].notna()
+    overlap_count = int(overlap.sum())
+    if overlap_count:
+        examples = wm_data.loc[overlap, ["subject", "task", "TRIAL_START"]].head(5)
+        LOGGER.warning(
+            "%s RV1 Working Memory trial row(s) appear in both global*.csv and "
+            "global_trials_wm*.csv. Rows are retained; review these examples: %s",
+            overlap_count,
+            examples.to_dict(orient="records"),
+        )
+    else:
+        LOGGER.info(
+            "RV1 Working Memory overlap check passed: no shared trials found "
+            "between global*.csv and global_trials_wm*.csv."
+        )
+
+
 def load_all_villages() -> pd.DataFrame:
     """Load every matching early-training, global-trial, and optional WM export."""
     frames: list[pd.DataFrame] = []
@@ -150,6 +210,7 @@ def load_all_villages() -> pd.DataFrame:
             "Set the working_memory path in settings.py."
         )
 
+    _warn_on_rv1_working_memory_overlap(frames)
     frames = _harmonise_source_types(frames)
     return pd.concat(frames, ignore_index=True, sort=False)
 
