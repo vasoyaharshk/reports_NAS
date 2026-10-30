@@ -6,29 +6,29 @@ CSV inputs use the semicolon separator used by the source exports.
 from pathlib import Path
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent
-DATA_DIRECTORY = PROJECT_DIRECTORY / "Data"
+# The NAS data folders are outside the cloned repository.
+DATA_DIRECTORY = Path(r"H:\NAS")
 
-# Rat metadata workbook; edit this path if the workbook is stored elsewhere.
-RAT_HEALTH_FILE = DATA_DIRECTORY / "rat_health_LE.xlsx"
+# Rat metadata workbook.
+RAT_HEALTH_FILE = DATA_DIRECTORY / "rat_health_sheet" / "rat_health_LE.xlsx"
 RAT_DETAILS_SHEET = "rat_details"
 
-
-# Data files are grouped by village in the Git repository's Data directory.
-# RV1 currently has WM global data only; early-training and PI global files are absent.
+# Each path points to a folder. Files are discovered by filename prefix:
+# early_training*.csv, global*.csv, and global_trials_wm*.csv.
 VILLAGE_INPUTS = {
     1: {
-        "early_training": None,
-        "global_trials_pi": None,
-        "working_memory": DATA_DIRECTORY / "ratvilalge01" / "global_trials" / "global_trials_wm.csv",
+        "early_training": DATA_DIRECTORY / "global_trials_rv1",
+        "global_trials_pi": DATA_DIRECTORY / "global_trials_rv1",
+        "working_memory": DATA_DIRECTORY / "global_trials_rv1",
     },
     2: {
-        "early_training": DATA_DIRECTORY / "ratvilalge02" / "global_trials" / "early_training_rv2.csv",
-        "global_trials_pi": DATA_DIRECTORY / "ratvilalge02" / "global_trials" / "global_trials_pi_rv2.csv",
+        "early_training": DATA_DIRECTORY / "global_trials_rv2",
+        "global_trials_pi": DATA_DIRECTORY / "global_trials_rv2",
         "working_memory": None,
     },
     3: {
-        "early_training": DATA_DIRECTORY / "ratvillage03" / "global_trials" / "early_training_rv3.csv",
-        "global_trials_pi": DATA_DIRECTORY / "ratvillage03" / "global_trials" / "global_trials_pi_rv3.csv",
+        "early_training": DATA_DIRECTORY / "global_trials_rv3",
+        "global_trials_pi": DATA_DIRECTORY / "global_trials_rv3",
         "working_memory": None,
     },
 }
@@ -76,28 +76,36 @@ PERIOD_COMPARISON_PERIODS = [
 ]
 PERIOD_COMPARISON_OUTPUT_FILENAME = "RV2_RV3_Trials_Sessions_By_Period.xlsx"
 
-# Explicit village mapping is used because event filenames may be renamed.
-# Each value accepts one path or a list of paths from the same village.
-EVENT_FILES = {
-    1: [],
-    2: [
-        DATA_DIRECTORY / "ratvilalge02" / "events" / "events.csv",
-        DATA_DIRECTORY / "ratvilalge02" / "events" / "events_20251001_rv2.csv",
-        DATA_DIRECTORY / "ratvilalge02" / "events" / "events_20260402_rv2.csv",
-    ],
-    3: [DATA_DIRECTORY / "ratvillage03" / "events" / "events.csv"],
+# Each village points to its events folder. Every events*.csv file is loaded.
+EVENT_DIRECTORIES = {
+    1: DATA_DIRECTORY / "events_rv1",
+    2: DATA_DIRECTORY / "events_rv2",
+    3: DATA_DIRECTORY / "events_rv3",
 }
 
-# Separate input folders keep RV2's multi-sensor master exports and RV3's
-# middle-sensor exports independent. The merge command reads CSV and Excel files.
-ENVIRONMENT_DIRECTORIES = {
-    1: None,
-    2: DATA_DIRECTORY / "ratvilalge02" / "environment",
-    3: DATA_DIRECTORY / "ratvillage03" / "environment",
+ORY / "ratvillage03" / "environment",
 }
 ENVIRONMENT_EXCEL_SHEET = "Environment"
 ENVIRONMENT_TIMEZONE = "Europe/Madrid"
 DELETE_ENVIRONMENT_INPUTS_AFTER_MERGE = True
+
+# Academy writes these event times without a UTC offset. Comparing the
+# door events with Unix trial timestamps in the sample shows that the logger
+# uses fixed UTC+01:00 (CET), without a daylight saving adjustment.
+EVENT_TIMEZONE = "Etc/GMT-1"
+EVENT_SUBJECT_ALIASES = {"chand": "chandler"}
+EVENT_NON_ANIMAL_SUBJECTS = (
+    "academy", "none", "nan", "manual", "manual1", "manual2",
+)# Environment source folders are read only. Merged, de-duplicated files
+# are saved in the separate H:\\NAS\\environment folder.
+ENVIRONMENT_DIRECTORIES = {
+    1: None,
+    2: DATA_DIRECTORY / "environment_rv2",
+    3: DATA_DIRECTORY / "environment_rv3",
+}
+ENVIRONMENT_MERGED_DIRECTORY = DATA_DIRECTORY / "environment"
+ENVIRONMENT_EXCEL_SHEET = "Environment"
+ENVIRONMENT_TIMEZONE = "Europe/Madrid"
 
 # Academy writes these event times without a UTC offset. Comparing the
 # door events with Unix trial timestamps in the sample shows that the logger
