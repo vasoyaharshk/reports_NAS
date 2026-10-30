@@ -166,7 +166,7 @@ def _nice_trial_tick_step(maximum):
 
 
 def _draw_overall_trials_year_facets(pdf, weekly, village):
-    """Draw the village-wide weekly average, minimum, and maximum by year."""
+    """Draw the village-wide weekly average by year."""
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
     if not years:
         return
@@ -184,18 +184,10 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
             pd.to_datetime(weekly["week_start"]).dt.year.eq(year)
         ].sort_values("week_start")
         x = subset["week_start"]
-        minimum = pd.to_numeric(subset["min_trials_per_subject_day"], errors="coerce")
-        maximum = pd.to_numeric(subset["max_trials_per_subject_day"], errors="coerce")
         average = pd.to_numeric(subset["mean_trials_per_subject_day"], errors="coerce")
 
-        ax.fill_between(x, minimum, maximum, color="#6495ed", alpha=0.22,
-                        label="Minimum to maximum range")
-        ax.plot(x, maximum, color="#d97706", linestyle="--", linewidth=1.2,
-                label="Maximum")
         ax.plot(x, average, color="#1e3a8a", linewidth=2.4, marker="o",
                 markersize=2.5, label="Average")
-        ax.plot(x, minimum, color="#059669", linestyle="--", linewidth=1.2,
-                label="Minimum")
 
         ax.set_ylabel("Trials per rat per day")
         ax.set_ylim(bottom=0)
@@ -208,26 +200,18 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
             fontsize=7,
         )
         ax.set_xlabel("Week starting Monday")
-        year_max = max(maximum.max(skipna=True), average.max(skipna=True))
+        year_max = average.max(skipna=True)
         ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
 
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+        ax.legend(loc="upper left", frameon=False)
     fig.suptitle(
-        f"{village}: weekly trials per rat",
+        f"{village}: weekly average trials per rat",
         fontsize=15,
         weight="bold",
     )
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.97),
-        ncol=4,
-        frameon=False,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -433,8 +417,6 @@ def generate(data):
                     total_trials=("subject_week_trials", "sum"),
                     subjects_with_trials=("subject", "nunique"),
                     mean_trials_per_subject_day=("subject_daily_average", "mean"),
-                    min_trials_per_subject_day=("subject_daily_average", "min"),
-                    max_trials_per_subject_day=("subject_daily_average", "max"),
                 )
             )
             family_weekly = active_week_days.merge(
@@ -447,8 +429,6 @@ def generate(data):
                 "total_trials",
                 "subjects_with_trials",
                 "mean_trials_per_subject_day",
-                "min_trials_per_subject_day",
-                "max_trials_per_subject_day",
             ):
                 family_weekly[column] = family_weekly[column].fillna(0)
             experiment_weekly_parts.append(family_weekly)
@@ -459,8 +439,7 @@ def generate(data):
         else pd.DataFrame(columns=[
             "village", "experiment", "week_start", "days_in_week",
             "total_trials", "subjects_with_trials",
-            "mean_trials_per_subject_day", "min_trials_per_subject_day",
-            "max_trials_per_subject_day",
+            "mean_trials_per_subject_day",
         ])
     )
     experiment_weekly = experiment_weekly.sort_values(
@@ -517,46 +496,6 @@ def generate(data):
     weekly["mean_trials_per_subject_day"] = weekly["mean_trials_per_subject_day"].fillna(0)
     weekly["subjects_with_trials"] = weekly["subjects_with_trials"].fillna(0)
 
-    # Preserve the previous minimum and maximum: the lowest and highest
-    # individual rat-day trial counts, including zero when a living rat had
-    # no trials on a day.
-    extremes = (
-        rat_daily.assign(
-            week_start=rat_daily["day"]
-            - pd.to_timedelta(rat_daily["day"].dt.weekday, unit="D")
-        )
-        .groupby(["village", "week_start"])["trials"]
-        .agg(max_trials_per_subject_day="max", observed_min="min")
-        .reset_index()
-    )
-    weekly = weekly.merge(
-        extremes,
-        on=["village", "week_start"],
-        how="left",
-        validate="one_to_one",
-    )
-    observed_counts = (
-        rat_daily.groupby(["village", "day"]).size()
-        .rename("observed_rats").reset_index()
-    )
-    missing_days = daily.merge(
-        observed_counts, on=["village", "day"], how="left"
-    )
-    missing_days["has_zero"] = (
-        missing_days["living_subjects"] > missing_days["observed_rats"].fillna(0)
-    )
-    zero_weeks = (
-        missing_days.groupby(["village", "week_start"])["has_zero"]
-        .any().rename("has_zero").reset_index()
-    )
-    weekly = weekly.merge(
-        zero_weeks, on=["village", "week_start"], how="left", validate="one_to_one"
-    )
-    weekly["min_trials_per_subject_day"] = np.where(
-        weekly["has_zero"], 0, weekly["observed_min"].fillna(0)
-    )
-    weekly["max_trials_per_subject_day"] = weekly["max_trials_per_subject_day"].fillna(0)
-    weekly = weekly.drop(columns=["observed_min", "has_zero"])
     weekly = weekly.sort_values(["village", "week_start"])
 
     directory = Path(settings.REPORT_DIRECTORY)
