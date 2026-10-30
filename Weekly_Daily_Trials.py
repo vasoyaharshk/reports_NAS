@@ -278,7 +278,7 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
                 label=experiment,
             )
 
-        ax.set_ylabel("Trials per living rat per day")
+        ax.set_ylabel("Trials per rat per day")
         ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         # Show every observed week, rather than only one tick every four weeks.
