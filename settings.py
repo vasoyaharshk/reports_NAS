@@ -8,6 +8,11 @@ from pathlib import Path
 PROJECT_DIRECTORY = Path(__file__).resolve().parent
 DATA_DIRECTORY = PROJECT_DIRECTORY / "Data"
 
+# Rat metadata workbook; edit this path if the workbook is stored elsewhere.
+RAT_HEALTH_FILE = DATA_DIRECTORY / "rat_health_LE.xlsx"
+RAT_DETAILS_SHEET = "rat_details"
+
+
 # Data files are grouped by village in the Git repository's Data directory.
 # RV1 currently has WM global data only; early-training and PI global files are absent.
 VILLAGE_INPUTS = {
