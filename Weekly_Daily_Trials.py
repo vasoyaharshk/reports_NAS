@@ -549,13 +549,17 @@ def generate(data):
         daily["box_minutes"] / (1440 * daily["living_subjects"].replace(0, np.nan)) * 100)
     daily["week_start"] = daily["day"] - pd.to_timedelta(
         daily["day"].dt.weekday, unit="D")
+    # Keep the count of calendar days separate from dates with trial records.
+    # Neither column is the rat-specific divisor in the trial averages.
+    daily["day_with_trials"] = daily["total_trials"].gt(0)
     weekly = (
         daily.groupby(["village", "week_start"], as_index=False)
         .agg(total_trials=("total_trials", "sum"),
              active_rat_hours=("active_rat_hours", "sum"),
              box_minutes=("box_minutes", "sum"),
              subject_days=("living_subjects", "sum"),
-             observed_days=("day", "size"))
+             calendar_days=("day", "size"),
+             observed_days=("day_with_trials", "sum"))
     )
 
     # Identical individual-rat calculation for both plotted measures.
