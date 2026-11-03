@@ -42,6 +42,7 @@ INTERVENTION_EVENTS = {
         ("2025-06-25", "Reward volume increased to 140 µL"),
         ("2025-07-04", "TouchTeaching advancement criterion reduced to 50 trials"),
         ("2025-07-22", "CA water 3% to 3.5%"),
+        ("2025-07-25", "CA water increased to 5%"),
         ("2025-07-28", "Side walls installed; speakers repositioned"),
         ("2025-08-18", "Daily food allocation set to 160 g"),
         ("2025-08-27", "Sucrose concentration 10% to 15%"),
