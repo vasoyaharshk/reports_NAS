@@ -647,6 +647,142 @@ def _comparison_stat(subject_rates, village, metric, category):
     )
 
 
+def _draw_reward_change_period_boxplots(pdf, frame, details):
+    """Compare per-rat daily trial averages across the 2026 reward phases."""
+    village_order = ["RV2", "RV3"]
+    period_end = pd.Timestamp("2026-10-19 00:00").tz_localize(
+        settings.REPORT_TIMEZONE
+    )
+    transition_22 = pd.Timestamp("2026-10-22 16:00").tz_localize(
+        settings.REPORT_TIMEZONE
+    )
+    transition_26 = pd.Timestamp("2026-10-26 13:00").tz_localize(
+        settings.REPORT_TIMEZONE
+    )
+    transition_30 = pd.Timestamp("2026-10-30 13:00").tz_localize(
+        settings.REPORT_TIMEZONE
+    )
+    period_start = pd.Timestamp("2026-10-19 00:00").tz_localize(
+        settings.REPORT_TIMEZONE
+    )
+    labels = [
+        "Before", "20 µL\n5%", "20 µL\n10%", "75 µL\n10%",
+        "70 µL\n10%", "100 µL\n10%",
+    ]
+    colors = ["#6B7280", "#0072B2", "#56B4E9", "#009E73", "#D55E00", "#CC79A7"]
+
+    roster = details.copy()
+    roster["ratvillage_number"] = pd.to_numeric(
+        roster["ratvillage_number"], errors="coerce"
+    )
+    roster["subject"] = roster["rat_id"].astype("string").str.strip().str.lower()
+    roster["exp_start_date"] = pd.to_datetime(
+        roster["exp_start_date"], errors="coerce"
+    )
+    roster = roster.loc[
+        roster["ratvillage_number"].isin([2, 3])
+        & roster["subject"].notna()
+        & roster["subject"].ne("")
+    ].copy()
+    roster["village"] = "RV" + roster["ratvillage_number"].astype(int).astype(str)
+    start_dates = {}
+    for village in village_order:
+        village_roster = roster.loc[
+            roster["village"].eq(village)
+        ].drop_duplicates("subject")
+        start_dates[village] = {
+            row.subject: row.exp_start_date.tz_localize(settings.REPORT_TIMEZONE)
+            for row in village_roster.itertuples()
+            if pd.notna(row.exp_start_date)
+        }
+
+    fig, axes = plt.subplots(1, 2, figsize=(17, 7), sharey=True, squeeze=False)
+    for ax, village in zip(axes[0], village_order):
+        village_frame = frame.loc[frame["village"].eq(village)].copy()
+        village_frame["subject"] = village_frame["subject"].astype("string").str.strip().str.lower()
+        phases = [
+            ("Before", None, period_end),
+            ("20 µL 5%", period_start, transition_22),
+            ("20 µL 10%", transition_22, transition_26),
+            ("75 µL 10%", transition_26, transition_30),
+            ("70 µL 10%", transition_30, None if village == "RV3" else transition_30),
+            ("100 µL 10%", transition_30 if village == "RV2" else transition_30,
+             None if village == "RV2" else transition_30),
+        ]
+        box_values = []
+        positions = []
+        for index, (phase, start, end) in enumerate(phases, start=1):
+            subset = village_frame
+            if phase == "Before":
+                rat_start = subset["subject"].map(start_dates[village])
+                mask = rat_start.notna() & subset["local_datetime"].ge(rat_start)
+                mask &= subset["local_datetime"].lt(end)
+                subset = subset.loc[mask]
+            elif phase == "70 µL 10%" and village != "RV3":
+                subset = subset.iloc[0:0]
+            elif phase == "100 µL 10%" and village != "RV2":
+                subset = subset.iloc[0:0]
+            else:
+                mask = subset["local_datetime"].ge(start)
+                if end is not None:
+                    mask &= subset["local_datetime"].lt(end)
+                subset = subset.loc[mask]
+
+            if subset.empty:
+                ax.text(index, 3, "No data", rotation=90, ha="center", va="bottom",
+                        fontsize=8, color="#6B7280")
+                continue
+            daily = subset.groupby(["subject", "day"]).size().rename("trials")
+            per_rat = daily.groupby("subject").mean().dropna()
+            if per_rat.empty:
+                ax.text(index, 3, "No data", rotation=90, ha="center", va="bottom",
+                        fontsize=8, color="#6B7280")
+                continue
+            values = per_rat.to_numpy(dtype=float)
+            box_values.append(values)
+            positions.append(index)
+            ax.scatter(
+                index + ((np.arange(len(values)) % 5) - 2) * 0.035,
+                values, s=18, color="#111827", alpha=0.55, zorder=4,
+            )
+            ax.text(index, min(float(per_rat.max()) + 3, 146), f"n={len(values)}",
+                    ha="center", va="bottom", fontsize=8, color="#374151")
+
+        if box_values:
+            artists = ax.boxplot(
+                box_values, positions=positions, widths=0.48, patch_artist=True,
+                showmeans=True, whis=(0, 100), showfliers=False,
+                medianprops={"color": "#111827", "linewidth": 1.2},
+                meanprops={"marker": "D", "markerfacecolor": "white",
+                           "markeredgecolor": "#111827", "markersize": 5},
+                whiskerprops={"color": "#374151", "linewidth": 1.0},
+                capprops={"color": "#374151", "linewidth": 1.0},
+            )
+            for box, position in zip(artists["boxes"], positions):
+                box.set_facecolor(colors[position - 1])
+                box.set_alpha(0.68)
+        ax.set_xticks(range(1, len(labels) + 1))
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xlim(0.5, len(labels) + 0.5)
+        ax.set_ylim(0, 150)
+        ax.set_title(village, fontsize=12, weight="bold")
+        ax.set_ylabel("Mean daily trials per rat" if village == "RV2" else "")
+        ax.grid(axis="y", alpha=0.22)
+        ax.set_axisbelow(True)
+
+    fig.suptitle("Daily trials across reward-change periods", fontsize=14, weight="bold")
+    fig.text(
+        0.01, 0.01,
+        "Each box shows one average per rat, calculated across that rat's active trial days. "
+        "Before starts at each rat's experiment start date in the rat-health sheet. "
+        "Change dates use the recorded local times.",
+        fontsize=8, color="#4B5563",
+    )
+    fig.tight_layout(rect=(0, 0.05, 1, 0.92))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _draw_comparison_summary_pages(pdf, details, subject_rates):
     """Add village characteristics and mean/min/max summary tables to the PDF."""
     village_order = ["RV1", "RV2", "RV3"]
@@ -1594,6 +1730,7 @@ def generate(data):
         _draw_category_period_summary(pdf, category_period_summary)
         _draw_biweekly_measure_plot(pdf, biweekly_measures, environment_source_note)
         _draw_boxplot_pages(pdf, boxplot_subject_rates)
+        _draw_reward_change_period_boxplots(pdf, frame, rat_details)
         _draw_comparison_summary_pages(pdf, rat_details, boxplot_subject_rates)
     return pdf_path, csv_path
 
