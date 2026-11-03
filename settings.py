@@ -12,6 +12,19 @@ DATA_DIRECTORY = Path(r"H:\NAS")
 # Rat metadata workbook.
 RAT_HEALTH_FILE = DATA_DIRECTORY / "rat_health_sheet" / "rat_health_LE.xlsx"
 RAT_DETAILS_SHEET = "rat_details"
+RAT_WEIGHT_SHEETS = {
+    1: "weights_females_rv1",
+    2: "weights_males_rv2",
+    3: "weights_females_rv3",
+}
+DAILY_FOOD_WATER_SHEET = "daily_food_water"
+FOOD_WATER_SHEETS = {
+    1: "food_water_rv1",
+    2: "food_water_rv2",
+    3: "food_water_rv3",
+}
+# Two-week periods are aligned to Mondays from this anchor date.
+BIWEEKLY_PERIOD_ANCHOR = "2024-01-01"
 
 # Each path points to a folder. Files are discovered by filename prefix:
 # early_training*.csv, global*.csv, and global_trials_wm*.csv.
