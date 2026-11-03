@@ -69,7 +69,7 @@ class WeeklyReportTests(unittest.TestCase):
     def test_roster_uses_start_and_death_dates(self):
         frame = pd.DataFrame({
             "village": ["RV1", "RV1"],
-            "day": [pd.Timestamp("2026-10-05"), pd.Timestamp("2026-10-08")],
+            "day": [pd.Timestamp("2026-10-05"), pd.Timestamp("2026-10-09")],
         })
         details = pd.DataFrame({
             "ratvillage_number": [1, 1],
@@ -84,9 +84,11 @@ class WeeklyReportTests(unittest.TestCase):
         a_dates = set(roster.loc[roster["subject"].eq("rat_a"), "day"])
         b_dates = set(roster.loc[roster["subject"].eq("rat_b"), "day"])
         self.assertEqual(a_dates, {
-            pd.Timestamp("2026-10-06"), pd.Timestamp("2026-10-07")
+            pd.Timestamp("2026-10-06"), pd.Timestamp("2026-10-07"),
+            pd.Timestamp("2026-10-08")
         })
-        self.assertEqual(len(b_dates), 4)
+        self.assertEqual(len(b_dates), 5)
+        self.assertNotIn(pd.Timestamp("2026-10-09"), a_dates)
 
     def test_seasons_do_not_change_plot_limits(self):
         fig, ax = plt.subplots()
