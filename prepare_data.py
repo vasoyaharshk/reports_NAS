@@ -1269,7 +1269,8 @@ def add_living_subjects(data: pd.DataFrame, rat_health_path: Path | None = None)
 
     Population comes exclusively from rat_details, never observed trial subjects
     or EXCLUDED_SUBJECTS. A rat counts from its experimental start date until
-    (but not including) its recorded death date.
+    through and including its recorded death date. The source contains dates
+    without death times; trials recorded on that date remain valid.
     """
     workbook = Path(rat_health_path if rat_health_path is not None else settings.RAT_HEALTH_FILE)
     if not workbook.is_file():
@@ -1319,7 +1320,7 @@ def add_living_subjects(data: pd.DataFrame, rat_health_path: Path | None = None)
         deaths = pd.to_datetime(rats["passed_away_date"]).to_numpy(dtype="datetime64[D]")
         day_values = pd.to_datetime(days["date"]).to_numpy(dtype="datetime64[D]")
         active = (day_values[:, None] >= starts[None, :]) & (
-            pd.isna(deaths)[None, :] | (day_values[:, None] < deaths[None, :]))
+            pd.isna(deaths)[None, :] | (day_values[:, None] <= deaths[None, :]))
         days["number_of_living_subjects"] = active.sum(axis=1).astype(int)
         pieces.append(days)
     population = pd.concat(pieces, ignore_index=True)
