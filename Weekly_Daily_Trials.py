@@ -552,11 +552,12 @@ def _draw_boxplot_pages(pdf, subject_rates):
     plt.close(fig)
 
     experiment_categories = ["Working Memory", "Probabilistic Inference", "Cognitive Bias"]
-    fig, axes = plt.subplots(1, 3, figsize=(16, 6), squeeze=False)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True, squeeze=False)
     for ax, category in zip(axes[0], experiment_categories):
         _draw_boxplot_panel(ax, subject_rates,
                             "Trials per rat per trial day by experiment",
                             [category], village_order)
+        ax.set_ylim(0, 150)
         ax.set_title(category, fontsize=11, weight="bold")
         ax.legend(handles=legend, loc="upper right", frameon=False, ncol=1)
     fig.suptitle("Full-period per-rat average trials per day by experiment",
@@ -590,7 +591,7 @@ def _draw_boxplot_pages(pdf, subject_rates):
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
-    ca_levels = ["3%", "5%", "1%"]
+    ca_levels = ["1%", "2%", "3%", "3.5%", "4%", "5%"]
     fig, axes = plt.subplots(1, 3, figsize=(17, 6), sharey=True, squeeze=False)
     for ax, village in zip(axes[0], village_order):
         _draw_boxplot_panel(
