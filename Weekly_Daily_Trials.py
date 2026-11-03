@@ -1,7 +1,6 @@
 """Weekly trial and occupancy reports, grouped by Rat Village."""
 from pathlib import Path
 import logging
-import textwrap
 
 import matplotlib
 matplotlib.use("Agg")
@@ -9,7 +8,7 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import MultipleLocator
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
 import numpy as np
 import pandas as pd
 import settings
@@ -794,7 +793,7 @@ def _draw_comparison_summary_pages(pdf, details, subject_rates):
     plt.close(fig)
 
 def _nice_trial_tick_step(maximum):
-    """Choose readable y-axis intervals independently for each year facet."""
+    """Choose a readable y-axis interval for a trial-rate chart."""
     if pd.isna(maximum) or maximum <= 10:
         return 1
     if maximum <= 20:
@@ -808,47 +807,15 @@ def _nice_trial_tick_step(maximum):
     return 100
 
 
-def _annotate_interventions(ax, layout, lane_count, data_max):
-    """Mark diary interventions and add arrowed explanatory callout boxes."""
-    if not layout:
-        ax.set_ylim(bottom=0)
-        return
-
-    data_max = float(data_max) if pd.notna(data_max) and data_max > 0 else 1.0
-    # Keep callout cards above the data, leaving the lower 45% of the axis for
-    # the comparable weekly values on their shared scale.
-    axis_max = data_max / 0.45
-    ax.set_ylim(0, axis_max)
-
+def _annotate_interventions(ax, layout):
+    """Mark intervention dates; their descriptions are listed above the plot."""
     for event_date, _, _, _ in layout:
         ax.axvline(event_date, color="#B45309", linestyle="--", linewidth=1.0,
                    alpha=0.78, zorder=1)
 
-    row_step = 0.36 / max(lane_count, 1)
-    for event_date, label, x_text, lane in layout:
-        y_text = 0.96 - lane * row_step
-        card_text = f"{event_date:%d %b %Y}\n{textwrap.fill(label, width=25)}"
-        ax.annotate(
-            card_text,
-            xy=(event_date, data_max * 0.52),
-            xycoords="data",
-            xytext=(x_text, y_text),
-            textcoords="axes fraction",
-            ha="center",
-            va="center",
-            fontsize=6.8,
-            color="#1F2937",
-            bbox={"boxstyle": "round,pad=0.32", "fc": "white",
-                  "ec": "#D97706", "lw": 0.8, "alpha": 0.96},
-            arrowprops={"arrowstyle": "-|>", "color": "#9A3412",
-                        "lw": 0.75, "shrinkA": 3, "shrinkB": 1},
-            annotation_clip=False,
-            zorder=5,
-        )
-
 
 def _combined_intervention_layout(weekly):
-    """Place all villages' intervention callouts on the shared timeline."""
+    """Lay out intervention dates across the shared timeline."""
     dates_to_labels = {}
     for village, events in INTERVENTION_EVENTS.items():
         for date, label in events:
@@ -900,8 +867,8 @@ def _draw_overall_trials_comparison(pdf, weekly):
     """Compare the weekly overall trial rate across villages on one timeline."""
     village_order = ["RV1", "RV2", "RV3"]
     palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
-    timeline_start, timeline_end, layout, lane_count = _combined_intervention_layout(weekly)
-    fig, ax = plt.subplots(figsize=(18, 11))
+    timeline_start, timeline_end, layout, _ = _combined_intervention_layout(weekly)
+    fig, ax = plt.subplots(figsize=(18, 13))
 
     for village in village_order:
         subset = weekly.loc[weekly["village"].eq(village)].sort_values("week_start")
@@ -918,7 +885,8 @@ def _draw_overall_trials_comparison(pdf, weekly):
         weekly["mean_trials_per_subject_day"], errors="coerce"
     ).max(skipna=True)
     ax.set_xlim(timeline_start, timeline_end)
-    _annotate_interventions(ax, layout, lane_count, data_max)
+    _annotate_interventions(ax, layout)
+    ax.set_ylim(0, 170)
     _shade_timeline_seasons(ax, timeline_start, timeline_end)
     ax.set_ylabel("Trials per rat per observed trial day")
     ax.set_xlabel("Week starting Monday")
@@ -934,14 +902,51 @@ def _draw_overall_trials_comparison(pdf, weekly):
     ]
     fig.legend(
         handles=village_handles + _season_handles(),
-        loc="upper center", bbox_to_anchor=(0.5, 0.965),
+        loc="upper center", bbox_to_anchor=(0.5, 0.955),
         ncol=4, frameon=False, fontsize=9,
     )
     fig.suptitle(
         "Weekly average trials per rat across Rat Villages",
-        fontsize=15, weight="bold", y=0.995,
+        fontsize=15, weight="bold", y=0.99,
     )
-    fig.tight_layout(rect=(0.02, 0.04, 0.98, 0.93))
+    fig.text(
+        0.04, 0.91,
+        "Interventions (vertical dashed lines mark event dates)",
+        fontsize=10, weight="bold", color="#374151",
+    )
+
+    # Put readable event notes in a dedicated band above the chart so they do
+    # not cover weekly values or force a larger y-axis range.
+    events = sorted(
+        (pd.Timestamp(date), village, label)
+        for village, village_events in INTERVENTION_EVENTS.items()
+        for date, label in village_events
+    )
+    columns = [events[i::3] for i in range(3)]
+    event_colors = {"RV1": palette["RV1"], "RV2": palette["RV2"],
+                    "RV3": palette["RV3"]}
+    column_lefts = (0.04, 0.365, 0.69)
+    column_width = 0.27
+    panel_bottom, panel_top = 0.615, 0.89
+    for left, entries in zip(column_lefts, columns):
+        fig.add_artist(Rectangle(
+            (left, panel_bottom), column_width, panel_top-panel_bottom,
+            transform=fig.transFigure, facecolor="white",
+            edgecolor="#D1D5DB", linewidth=0.7, zorder=0,
+        ))
+        row_step = (panel_top - panel_bottom - 0.018) / max(len(entries), 1)
+        for row_index, (event_date, village, label) in enumerate(entries):
+            y = panel_top - 0.018 - row_index * row_step
+            fig.text(
+                left + 0.008, y,
+                f"{event_date:%d %b %Y}  {village}: {label}",
+                fontsize=7.7, color=event_colors[village],
+                va="top", ha="left", clip_on=True,
+            )
+
+    # Reserve the top band for intervention notes and keep the data plot at
+    # the requested 0–170 scale.
+    ax.set_position([0.055, 0.075, 0.925, 0.515])
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -1006,51 +1011,43 @@ def _draw_experiment_comparison(pdf, weekly, experiment_weekly):
     plt.close(fig)
 
 
-def _draw_category_period_summary(pdf, summary, village):
-    """Draw full-period Method 1 averages by experiment category."""
-    subset = summary.loc[summary["village"].eq(village)].sort_values("experiment")
+def _draw_category_period_summary(pdf, summary):
+    """Draw one full-period table comparing task categories across villages."""
+    village_order = ["RV1", "RV2", "RV3"]
+    values = summary.set_index(["experiment", "village"])[
+        "mean_trials_per_subject_day"
+    ] if not summary.empty else pd.Series(dtype=float)
 
-    fig, ax = plt.subplots(figsize=(16, 6))
+    fig, ax = plt.subplots(figsize=(14, 6))
     ax.axis("off")
     fig.suptitle(
-        f"{village}: average trials per rat per day by task category",
+        "Average trials per rat per day by task category",
         fontsize=15,
         weight="bold",
         y=0.96,
     )
 
-    if subset.empty:
+    if summary.empty:
         ax.text(0.5, 0.5, "No classified task trials available",
                 ha="center", va="center", fontsize=12, transform=ax.transAxes)
     else:
         rows = []
-        for row in subset.itertuples(index=False):
-            rows.append([
-                row.experiment,
-                pd.Timestamp(row.period_start).strftime("%d %b %Y"),
-                pd.Timestamp(row.period_end).strftime("%d %b %Y"),
-                f"{int(row.rat_days_with_trials):,}",
-                f"{int(row.subjects_with_trials):,}",
-                f"{row.mean_trials_per_subject_day:,.1f}",
-            ])
+        for category in EXPERIMENT_FAMILIES:
+            row = [category]
+            for village in village_order:
+                value = values.get((category, village), np.nan)
+                row.append(f"{value:,.1f}" if pd.notna(value) else "No data")
+            rows.append(row)
         table = ax.table(
             cellText=rows,
-            colLabels=[
-                "Task category",
-                "First trial",
-                "Last trial",
-                "Observed rat-days",
-                "Rats with trials",
-                "Mean trials per active rat-day",
-            ],
+            colLabels=["Task category", *village_order],
             cellLoc="center",
             colLoc="center",
-            colWidths=[0.22, 0.15, 0.15, 0.13, 0.15, 0.20],
-            loc="center",
+            colWidths=[0.34, 0.22, 0.22, 0.22],
+            bbox=[0.04, 0.30, 0.92, 0.42],
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 1.8)
+        table.set_fontsize(11)
         for (row_index, _), cell in table.get_celld().items():
             cell.set_edgecolor("#D1D5DB")
             if row_index == 0:
@@ -1060,13 +1057,23 @@ def _draw_category_period_summary(pdf, summary, village):
                 cell.set_facecolor("white")
 
         ax.text(
+            0.66,
+            0.77,
+            "Mean trials per active rat-day",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            weight="bold",
+            color="#1F2937",
+            transform=ax.transAxes,
+        )
+        ax.text(
             0.02,
-            0.12,
+            0.16,
             "For each rat, category trials were divided by that rat's number "
             "of distinct dates with trials in the category. The table shows "
             "the equal-weighted mean across rats with at least one trial in "
-            "that category during the period. Observed rat-days is the sum "
-            "of those rat-specific date counts.",
+            "that category during the period.",
             ha="left",
             va="top",
             fontsize=9,
@@ -1326,9 +1333,7 @@ def generate(data):
     with PdfPages(pdf_path) as pdf:
         _draw_overall_trials_comparison(pdf, weekly)
         _draw_experiment_comparison(pdf, weekly, experiment_weekly)
-        for village, subset in weekly.groupby("village", sort=True):
-            subset = subset.sort_values("week_start").reset_index(drop=True)
-            _draw_category_period_summary(pdf, category_period_summary, village)
+        _draw_category_period_summary(pdf, category_period_summary)
         _draw_boxplot_pages(pdf, boxplot_subject_rates)
         _draw_comparison_summary_pages(pdf, rat_details, boxplot_subject_rates)
     return pdf_path, csv_path
