@@ -181,7 +181,7 @@ def _shade_seasons(ax, year):
 
 
 def _living_roster(frame):
-    """Rat-day roster from the health workbook; start inclusive, death exclusive."""
+    """Rat-day roster from health data; both start and death dates inclusive."""
     workbook = Path(settings.RAT_HEALTH_FILE)
     if not workbook.is_file():
         raise FileNotFoundError(f"Weekly report needs rat health workbook: {workbook}")
@@ -220,7 +220,7 @@ def _living_roster(frame):
         alive = candidates.loc[
             candidates["day"].ge(candidates["exp_start_date"])
             & (candidates["passed_away_date"].isna()
-               | candidates["day"].lt(candidates["passed_away_date"])),
+               | candidates["day"].le(candidates["passed_away_date"])),
             ["village", "subject", "day"]
         ]
         parts.append(alive)
