@@ -5,6 +5,7 @@ import textwrap
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import MultipleLocator
@@ -807,47 +808,6 @@ def _nice_trial_tick_step(maximum):
     return 100
 
 
-def _events_for_year(village, year):
-    """Return the curated intervention events for one village and year."""
-    return [
-        (pd.Timestamp(date), label)
-        for date, label in INTERVENTION_EVENTS.get(village, [])
-        if pd.Timestamp(date).year == int(year)
-    ]
-
-
-def _year_intervention_layout(weekly, village, year):
-    """Place event labels over their dates, assigning lanes to avoid overlap."""
-    year_data = weekly.loc[pd.to_datetime(weekly["week_start"]).dt.year.eq(int(year))]
-    events = _events_for_year(village, year)
-    x_start = pd.Timestamp(year_data["week_start"].min())
-    x_end = pd.Timestamp(year_data["week_start"].max())
-    if events:
-        x_start = min(x_start, min(date for date, _ in events))
-        x_end = max(x_end, max(date for date, _ in events))
-    if x_end <= x_start:
-        x_end = x_start + pd.Timedelta(days=1)
-
-    width = 0.14
-    gap = 0.012
-    lane_right_edges = []
-    layout = []
-    span = (x_end - x_start).total_seconds()
-    for event_date, label in events:
-        x_fraction = (event_date - x_start).total_seconds() / span
-        lane = next(
-            (i for i, right_edge in enumerate(lane_right_edges)
-             if x_fraction - width / 2 >= right_edge + gap),
-            None,
-        )
-        if lane is None:
-            lane = len(lane_right_edges)
-            lane_right_edges.append(-np.inf)
-        lane_right_edges[lane] = x_fraction + width / 2
-        layout.append((event_date, label, x_fraction, lane))
-    return x_start, x_end, layout, len(lane_right_edges)
-
-
 def _annotate_interventions(ax, layout, lane_count, data_max):
     """Mark diary interventions and add arrowed explanatory callout boxes."""
     if not layout:
@@ -855,16 +815,16 @@ def _annotate_interventions(ax, layout, lane_count, data_max):
         return
 
     data_max = float(data_max) if pd.notna(data_max) and data_max > 0 else 1.0
-    # Reserve the upper half of the axes for readable event labels. Weekly
-    # values remain on a linear scale and are still compared within each year.
-    axis_max = data_max / 0.50
+    # Keep callout cards above the data, leaving the lower 45% of the axis for
+    # the comparable weekly values on their shared scale.
+    axis_max = data_max / 0.45
     ax.set_ylim(0, axis_max)
 
     for event_date, _, _, _ in layout:
         ax.axvline(event_date, color="#B45309", linestyle="--", linewidth=1.0,
                    alpha=0.78, zorder=1)
 
-    row_step = min(0.12, 0.56 / max(lane_count, 1))
+    row_step = 0.36 / max(lane_count, 1)
     for event_date, label, x_text, lane in layout:
         y_text = 0.96 - lane * row_step
         card_text = f"{event_date:%d %b %Y}\n{textwrap.fill(label, width=25)}"
@@ -887,163 +847,163 @@ def _annotate_interventions(ax, layout, lane_count, data_max):
         )
 
 
-def _draw_overall_trials_year_facets(pdf, weekly, village):
-    """Draw the village-wide weekly average by year."""
-    years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
-    if not years:
-        return
+def _combined_intervention_layout(weekly):
+    """Place all villages' intervention callouts on the shared timeline."""
+    dates_to_labels = {}
+    for village, events in INTERVENTION_EVENTS.items():
+        for date, label in events:
+            event_date = pd.Timestamp(date)
+            dates_to_labels.setdefault(event_date, []).append(f"{village}: {label}")
 
-    event_layouts = {
-        int(year): _year_intervention_layout(weekly, village, year)
-        for year in years
-    }
-    max_event_rows = max((entry[3] for entry in event_layouts.values()), default=0)
-    panel_height = max(5.5, 4.0 + 0.72 * max_event_rows)
-    fig, axes = plt.subplots(
-        len(years),
-        1,
-        figsize=(16, panel_height * len(years)),
-        squeeze=False,
-        sharex=False,
-        sharey=False,
-    )
-    for ax, year in zip(axes[:, 0], years):
-        subset = weekly.loc[
-            pd.to_datetime(weekly["week_start"]).dt.year.eq(year)
-        ].sort_values("week_start")
-        x = subset["week_start"]
-        average = pd.to_numeric(subset["mean_trials_per_subject_day"], errors="coerce")
+    x_start = pd.to_datetime(weekly["week_start"]).min()
+    x_end = pd.to_datetime(weekly["week_start"]).max() + pd.Timedelta(days=6)
+    if dates_to_labels:
+        x_start = min(x_start, min(dates_to_labels))
+        x_end = max(x_end, max(dates_to_labels))
+    if x_end <= x_start:
+        x_end = x_start + pd.Timedelta(days=1)
 
-        ax.plot(x, average, color="#1e3a8a", linewidth=2.4, marker="o",
-                markersize=2.5, label="Average")
-
-        x_start, x_end, layout, lane_count = event_layouts[int(year)]
-        ax.set_xlim(x_start, x_end)
-        _annotate_interventions(ax, layout, lane_count, average.max(skipna=True))
-        _shade_seasons(ax, int(year))
-        ax.set_ylabel("Trials per rat per observed trial day")
-        ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
-        ticks = subset["week_start"]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(
-            pd.to_datetime(ticks).dt.strftime("%d %b"),
-            rotation=90,
-            fontsize=7,
+    width = 0.085
+    gap = 0.01
+    lane_right_edges = []
+    layout = []
+    span = (x_end - x_start).total_seconds()
+    for event_date, labels in sorted(dates_to_labels.items()):
+        x_fraction = (event_date - x_start).total_seconds() / span
+        lane = next(
+            (i for i, right_edge in enumerate(lane_right_edges)
+             if x_fraction - width / 2 >= right_edge + gap),
+            None,
         )
-        ax.set_xlabel("Week starting Monday")
-        year_max = average.max(skipna=True)
-        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
-        ax.grid(axis="y", alpha=0.22)
-        ax.set_axisbelow(True)
+        if lane is None:
+            lane = len(lane_right_edges)
+            lane_right_edges.append(-np.inf)
+        lane_right_edges[lane] = x_fraction + width / 2
+        layout.append((event_date, "\n".join(labels), x_fraction, lane))
+    return x_start, x_end, layout, len(lane_right_edges)
 
-    fig.suptitle(
-        f"{village}: weekly average trials per rat",
-        fontsize=15,
-        weight="bold",
+
+def _set_full_timeline_ticks(ax):
+    """Use quarterly labels so the complete multi-year timeline stays legible."""
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b\n%Y"))
+
+
+def _shade_timeline_seasons(ax, x_start, x_end):
+    """Shade meteorological seasons across every year in a shared timeline."""
+    for year in range(x_start.year, x_end.year + 1):
+        _shade_seasons(ax, year)
+    ax.set_xlim(x_start, x_end)
+
+
+def _draw_overall_trials_comparison(pdf, weekly):
+    """Compare the weekly overall trial rate across villages on one timeline."""
+    village_order = ["RV1", "RV2", "RV3"]
+    palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
+    timeline_start, timeline_end, layout, lane_count = _combined_intervention_layout(weekly)
+    fig, ax = plt.subplots(figsize=(18, 11))
+
+    for village in village_order:
+        subset = weekly.loc[weekly["village"].eq(village)].sort_values("week_start")
+        if subset.empty:
+            continue
+        ax.plot(
+            subset["week_start"],
+            pd.to_numeric(subset["mean_trials_per_subject_day"], errors="coerce"),
+            color=palette[village], linewidth=2.0, marker="o", markersize=2.8,
+            label=village, zorder=3,
+        )
+
+    data_max = pd.to_numeric(
+        weekly["mean_trials_per_subject_day"], errors="coerce"
+    ).max(skipna=True)
+    ax.set_xlim(timeline_start, timeline_end)
+    _annotate_interventions(ax, layout, lane_count, data_max)
+    _shade_timeline_seasons(ax, timeline_start, timeline_end)
+    ax.set_ylabel("Trials per rat per observed trial day")
+    ax.set_xlabel("Week starting Monday")
+    ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(data_max)))
+    _set_full_timeline_ticks(ax)
+    ax.grid(axis="y", alpha=0.22)
+    ax.set_axisbelow(True)
+
+    from matplotlib.lines import Line2D
+    village_handles = [
+        Line2D([0], [0], color=palette[v], linewidth=2, label=v)
+        for v in village_order
+    ]
+    fig.legend(
+        handles=village_handles + _season_handles(),
+        loc="upper center", bbox_to_anchor=(0.5, 0.965),
+        ncol=4, frameon=False, fontsize=9,
     )
-    fig.legend(handles=_season_handles(), loc="upper center",
-               bbox_to_anchor=(0.5, 0.96), ncol=4, frameon=False, fontsize=9)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    fig.suptitle(
+        "Weekly average trials per rat across Rat Villages",
+        fontsize=15, weight="bold", y=0.995,
+    )
+    fig.tight_layout(rect=(0.02, 0.04, 0.98, 0.93))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
 
-def _draw_year_facets(pdf, weekly, experiment_weekly, village):
-    """Draw weekly experiment averages with one vertically stacked panel per year."""
-    years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
-    if not years:
-        return
+def _draw_experiment_comparison(pdf, weekly, experiment_weekly):
+    """Compare each task family across villages on shared full-period axes."""
+    village_order = ["RV1", "RV2", "RV3"]
+    palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
+    timeline_start = pd.to_datetime(weekly["week_start"]).min()
+    timeline_end = pd.to_datetime(weekly["week_start"]).max() + pd.Timedelta(days=6)
+    intervention_dates = sorted({
+        pd.Timestamp(date)
+        for events in INTERVENTION_EVENTS.values()
+        for date, _ in events
+    })
 
-    event_layouts = {
-        int(year): _year_intervention_layout(weekly, village, year)
-        for year in years
-    }
-    max_event_rows = max((entry[3] for entry in event_layouts.values()), default=0)
-    panel_height = max(5.5, 4.0 + 0.72 * max_event_rows)
-    fig, axes = plt.subplots(
-        len(years),
-        1,
-        figsize=(16, panel_height * len(years)),
-        squeeze=False,
-        sharex=False,
-        sharey=False,
-    )
-    palette = {
-        "Working Memory": "#D55E00",
-        "Early Training": "#0072B2",
-        "Probability": "#CC79A7",
-        "Cognitive Bias": "#009E73",
-    }
-
-    for ax, year in zip(axes[:, 0], years):
-        village_weeks = weekly.loc[
-            pd.to_datetime(weekly["week_start"]).dt.year.eq(year)
-        ].sort_values("week_start")
-        year_experiments = experiment_weekly.loc[
-            experiment_weekly["village"].eq(village)
-            & pd.to_datetime(experiment_weekly["week_start"]).dt.year.eq(year)
+    fig, axes = plt.subplots(2, 2, figsize=(17, 10), sharex=True, squeeze=False)
+    for ax, experiment in zip(axes.flat, EXPERIMENT_FAMILIES):
+        subset = experiment_weekly.loc[
+            experiment_weekly["experiment"].eq(experiment)
         ]
-
-        for experiment in EXPERIMENT_FAMILIES:
-            series = year_experiments.loc[
-                year_experiments["experiment"].eq(experiment)
-            ].sort_values("week_start")
+        for village in village_order:
+            series = subset.loc[subset["village"].eq(village)].sort_values("week_start")
             if series.empty:
                 continue
             ax.plot(
                 series["week_start"],
-                series["mean_trials_per_subject_day"],
-                color=palette[experiment],
-                linewidth=1.8,
-                marker="o",
-                markersize=2.5,
-                label=experiment,
+                pd.to_numeric(series["mean_trials_per_subject_day"], errors="coerce"),
+                color=palette[village], linewidth=1.7, marker="o", markersize=2.2,
+                label=village, zorder=3,
             )
-
-        experiment_max = year_experiments["mean_trials_per_subject_day"].max(skipna=True)
-        x_start, x_end, layout, lane_count = event_layouts[int(year)]
-        ax.set_xlim(x_start, x_end)
-        _annotate_interventions(ax, layout, lane_count, experiment_max)
-        _shade_seasons(ax, int(year))
-        ax.set_ylabel("Trials per rat per observed trial day")
-        ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
-        # Show every observed week, rather than only one tick every four weeks.
-        ticks = village_weeks["week_start"]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(
-            pd.to_datetime(ticks).dt.strftime("%d %b"),
-            rotation=90,
-            fontsize=7,
-        )
-        ax.set_xlabel("Week starting Monday")
-        year_max = experiment_max
-        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
+        for event_date in intervention_dates:
+            ax.axvline(event_date, color="#9A3412", linestyle=":", linewidth=0.55,
+                       alpha=0.22, zorder=1)
+        _shade_timeline_seasons(ax, timeline_start, timeline_end)
+        value_max = pd.to_numeric(
+            subset["mean_trials_per_subject_day"], errors="coerce"
+        ).max(skipna=True)
+        ax.set_ylim(bottom=0)
+        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(value_max)))
+        ax.set_title(experiment, fontsize=11, weight="bold")
+        ax.set_ylabel("Trials per rat per observed trial day", fontsize=8)
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
+        _set_full_timeline_ticks(ax)
 
     from matplotlib.lines import Line2D
-
-    legend_handles = [
-        Line2D([0], [0], color=palette[family], linewidth=2, label=family)
-        for family in EXPERIMENT_FAMILIES
-    ]
+    handles = [
+        Line2D([0], [0], color=palette[v], linewidth=2, label=v)
+        for v in village_order
+    ] + _season_handles()
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.97),
+               ncol=4, frameon=False, fontsize=8)
     fig.suptitle(
-        f"{village}: weekly trial averages by experiment",
-        fontsize=15,
-        weight="bold",
+        "Weekly trial averages by experiment across Rat Villages",
+        fontsize=14, weight="bold", y=0.995,
     )
-    fig.legend(
-        handles=legend_handles + _season_handles(),
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.96),
-        ncol=4,
-        frameon=False,
-        fontsize=9,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.88))
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Week starting Monday")
+    fig.tight_layout(rect=(0.02, 0.03, 0.98, 0.92))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
-
 
 
 def _draw_category_period_summary(pdf, summary, village):
@@ -1364,10 +1324,10 @@ def generate(data):
 
     pdf_path = directory / "Weekly_Daily_Trials.pdf"
     with PdfPages(pdf_path) as pdf:
+        _draw_overall_trials_comparison(pdf, weekly)
+        _draw_experiment_comparison(pdf, weekly, experiment_weekly)
         for village, subset in weekly.groupby("village", sort=True):
             subset = subset.sort_values("week_start").reset_index(drop=True)
-            _draw_overall_trials_year_facets(pdf, subset, village)
-            _draw_year_facets(pdf, subset, experiment_weekly, village)
             _draw_category_period_summary(pdf, category_period_summary, village)
         _draw_boxplot_pages(pdf, boxplot_subject_rates)
         _draw_comparison_summary_pages(pdf, rat_details, boxplot_subject_rates)
