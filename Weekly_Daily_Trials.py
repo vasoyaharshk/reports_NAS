@@ -1086,6 +1086,248 @@ def _draw_category_period_summary(pdf, summary):
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
+
+def _biweekly_measure_summary():
+    """Build fortnightly body weight, intake, temperature, and humidity means."""
+    workbook = Path(settings.RAT_HEALTH_FILE)
+    anchor = pd.Timestamp(settings.BIWEEKLY_PERIOD_ANCHOR)
+
+    def add_period(frame, date_column="date"):
+        frame = frame.copy()
+        frame[date_column] = pd.to_datetime(frame[date_column], errors="coerce").dt.normalize()
+        frame = frame.dropna(subset=[date_column])
+        offset_days = (frame[date_column] - anchor).dt.days
+        frame["period_start"] = anchor + pd.to_timedelta(
+            (offset_days // 14) * 14, unit="D"
+        )
+        return frame
+
+    # Weight sheets are wide: animal IDs are rows and weigh dates are columns.
+    weight_parts = []
+    for village_number, sheet_name in settings.RAT_WEIGHT_SHEETS.items():
+        frame = pd.read_excel(workbook, sheet_name=sheet_name)
+        frame.columns = [str(column).strip() if column is not None else "" for column in frame.columns]
+        rat_column = next((column for column in frame if column.casefold() == "rat_id"), None)
+        date_map = {}
+        for column in frame.columns:
+            if column == rat_column:
+                continue
+            parsed_date = pd.to_datetime(column, errors="coerce")
+            if pd.notna(parsed_date):
+                date_map[column] = parsed_date.normalize()
+        if rat_column is None or not date_map:
+            LOGGER.warning("No dated weight measurements found in %s.", sheet_name)
+            continue
+        long = frame.melt(
+            id_vars=[rat_column], value_vars=list(date_map),
+            var_name="measurement_date", value_name="weight_g",
+        ).rename(columns={rat_column: "subject"})
+        long["date"] = long["measurement_date"].map(date_map)
+        long["weight_g"] = pd.to_numeric(long["weight_g"], errors="coerce")
+        long["subject"] = long["subject"].astype("string").str.strip().str.lower()
+        long["village"] = f"RV{village_number}"
+        long = add_period(long).dropna(subset=["weight_g", "subject"])
+        if not long.empty:
+            # Average repeated weigh-ins within rat and fortnight first, so
+            # rats with more weigh-ins do not dominate the village mean.
+            per_rat = long.groupby(
+                ["village", "period_start", "subject"], as_index=False
+            )["weight_g"].mean()
+            weight_parts.append(per_rat)
+    if weight_parts:
+        weight = pd.concat(weight_parts, ignore_index=True)
+        weight_summary = weight.groupby(
+            ["village", "period_start"], as_index=False
+        ).agg(body_weight_g=("weight_g", "mean"), weight_rats=("subject", "nunique"))
+    else:
+        weight_summary = pd.DataFrame(columns=["village", "period_start", "body_weight_g", "weight_rats"])
+
+    # The workbook stores these daily village totals and per-rat values.
+    food_water = pd.read_excel(workbook, sheet_name=settings.DAILY_FOOD_WATER_SHEET)
+    food_water.columns = [str(column).strip().lower() for column in food_water.columns]
+    required_food = {"ratvillage", "date"}
+    if not required_food.issubset(food_water.columns):
+        raise ValueError(
+            f"{settings.DAILY_FOOD_WATER_SHEET} must contain ratvillage and date columns."
+        )
+    village_numbers = pd.to_numeric(food_water["ratvillage"], errors="coerce")
+    food_water["village"] = "RV" + village_numbers.astype("Int64").astype("string")
+    food_water["water_ml_per_rat"] = pd.to_numeric(
+        food_water.get("water_ml_per_rat"), errors="coerce"
+    )
+    food_water["food_g_per_rat"] = pd.to_numeric(
+        food_water.get("food_g_per_rat"), errors="coerce"
+    )
+    if "water_ml_per_rat" not in food_water or food_water["water_ml_per_rat"].isna().all():
+        if {"water_ml", "rats_alive"}.issubset(food_water.columns):
+            food_water["water_ml_per_rat"] = (
+                pd.to_numeric(food_water["water_ml"], errors="coerce")
+                / pd.to_numeric(food_water["rats_alive"], errors="coerce").replace(0, np.nan)
+            )
+    if "food_g_per_rat" not in food_water or food_water["food_g_per_rat"].isna().all():
+        if {"food_g", "rats_alive"}.issubset(food_water.columns):
+            food_water["food_g_per_rat"] = (
+                pd.to_numeric(food_water["food_g"], errors="coerce")
+                / pd.to_numeric(food_water["rats_alive"], errors="coerce").replace(0, np.nan)
+            )
+    food_water = add_period(food_water)
+    food_water = food_water.loc[food_water["village"].isin(["RV1", "RV2", "RV3"])]
+    daily_intake = food_water.groupby(["village", "date"], as_index=False).agg(
+        ca_water_ml_per_rat_day=("water_ml_per_rat", "mean"),
+        food_g_per_rat_day=("food_g_per_rat", "mean"),
+        period_start=("period_start", "first"),
+    )
+    intake_summary = daily_intake.groupby(
+        ["village", "period_start"], as_index=False
+    ).agg(
+        ca_water_ml_per_rat_day=("ca_water_ml_per_rat_day", "mean"),
+        water_days=("ca_water_ml_per_rat_day", "count"),
+        food_g_per_rat_day=("food_g_per_rat_day", "mean"),
+        food_days=("food_g_per_rat_day", "count"),
+    )
+
+    # Environment logs are reduced to a daily mean across available sensor
+    # channels, then averaged within each 14-day period. For a village without
+    # a sensor log, use the midpoint of its recorded daily high and low values.
+    from prepare_data import _load_environment_data
+
+    environment_parts = []
+    fallback_villages = []
+    for village_number in (1, 2, 3):
+        environment = _load_environment_data(village_number)
+        if environment is not None:
+            temp_columns = [
+                column for column in environment.columns
+                if column.casefold().endswith("_c") and column.casefold() != "control_c"
+            ]
+            humidity_columns = [
+                column for column in environment.columns
+                if column.casefold().endswith("_rh")
+            ]
+            if "__env_time_utc" not in environment:
+                continue
+            local_time = environment["__env_time_utc"].dt.tz_convert(settings.REPORT_TIMEZONE)
+            environment["date"] = local_time.dt.tz_localize(None).dt.normalize()
+            environment["temperature_c"] = (
+                environment[temp_columns].mean(axis=1) if temp_columns else np.nan
+            )
+            environment["humidity_pct"] = (
+                environment[humidity_columns].mean(axis=1) if humidity_columns else np.nan
+            )
+            daily_environment = environment.groupby("date", as_index=False).agg(
+                temperature_c=("temperature_c", "mean"),
+                humidity_pct=("humidity_pct", "mean"),
+            )
+        else:
+            sheet_name = settings.FOOD_WATER_SHEETS.get(village_number)
+            if not sheet_name:
+                continue
+            legacy = pd.read_excel(workbook, sheet_name=sheet_name)
+            legacy.columns = [str(column).strip().lower() for column in legacy.columns]
+            required = {"date_start", "temp_highest", "temp_lowest", "humidity_highest", "humidity_lowest"}
+            if not required.issubset(legacy.columns):
+                continue
+            legacy["date"] = pd.to_datetime(legacy["date_start"], errors="coerce").dt.normalize()
+            for column in ("temp_highest", "temp_lowest", "humidity_highest", "humidity_lowest"):
+                legacy[column] = pd.to_numeric(legacy[column], errors="coerce")
+            daily_environment = legacy.assign(
+                temperature_c=legacy[["temp_highest", "temp_lowest"]].mean(axis=1),
+                humidity_pct=legacy[["humidity_highest", "humidity_lowest"]].mean(axis=1),
+            ).groupby("date", as_index=False).agg(
+                temperature_c=("temperature_c", "mean"),
+                humidity_pct=("humidity_pct", "mean"),
+            )
+            fallback_villages.append(f"RV{village_number}")
+        daily_environment["village"] = f"RV{village_number}"
+        daily_environment = add_period(daily_environment)
+        environment_parts.append(daily_environment)
+
+    if environment_parts:
+        environment_daily = pd.concat(environment_parts, ignore_index=True)
+        environment_summary = environment_daily.groupby(
+            ["village", "period_start"], as_index=False
+        ).agg(
+            temperature_c=("temperature_c", "mean"),
+            temperature_days=("temperature_c", "count"),
+            humidity_pct=("humidity_pct", "mean"),
+            humidity_days=("humidity_pct", "count"),
+        )
+    else:
+        environment_summary = pd.DataFrame(columns=[
+            "village", "period_start", "temperature_c", "temperature_days",
+            "humidity_pct", "humidity_days",
+        ])
+
+    summary = weight_summary.merge(
+        intake_summary, on=["village", "period_start"], how="outer"
+    ).merge(environment_summary, on=["village", "period_start"], how="outer")
+    summary = summary.sort_values(["village", "period_start"]).reset_index(drop=True)
+    if fallback_villages:
+        notes = (
+            "Temperature and humidity are daily means across sensor channels where available. "
+            f"{', '.join(fallback_villages)} use the midpoint of the workbook's recorded daily "
+            "high and low values because no merged sensor log is configured."
+        )
+    else:
+        notes = "Temperature and humidity are daily means across the available sensor channels."
+    return summary, notes
+
+
+def _draw_biweekly_measure_plot(pdf, summary, source_note):
+    """Plot biweekly weight, CA-water intake, food, temperature, and humidity."""
+    village_order = ["RV1", "RV2", "RV3"]
+    palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
+    metrics = [
+        ("body_weight_g", "Mean body weight (g)"),
+        ("ca_water_ml_per_rat_day", "CA water intake (mL per rat per day)"),
+        ("food_g_per_rat_day", "Food intake (g per rat per day)"),
+        ("temperature_c", "Daily mean temperature (°C)"),
+        ("humidity_pct", "Daily mean relative humidity (%)"),
+    ]
+    fig, axes = plt.subplots(5, 1, figsize=(17, 13), sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    if summary.empty:
+        axes[0].text(0.5, 0.5, "No weight, intake, or environment data available",
+                     ha="center", va="center", transform=axes[0].transAxes)
+    for ax, (column, label) in zip(axes, metrics):
+        has_values = False
+        for village in village_order:
+            subset = summary.loc[
+                summary["village"].eq(village)
+                & pd.to_numeric(summary.get(column), errors="coerce").notna()
+            ].sort_values("period_start")
+            if subset.empty:
+                continue
+            has_values = True
+            ax.plot(
+                subset["period_start"], subset[column],
+                color=palette[village], linewidth=1.6, marker="o", markersize=2.5,
+                label=village,
+            )
+        if not has_values:
+            ax.text(0.5, 0.5, "No data available", ha="center", va="center",
+                    transform=ax.transAxes, color="#6B7280")
+        ax.set_ylabel(label, fontsize=8)
+        ax.grid(axis="y", alpha=0.22)
+        ax.set_axisbelow(True)
+    axes[-1].xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b\n%Y"))
+    axes[-1].set_xlabel("14-day period starting")
+    from matplotlib.lines import Line2D
+    handles = [Line2D([0], [0], color=palette[v], linewidth=2, label=v)
+               for v in village_order]
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.965),
+               ncol=3, frameon=False, fontsize=9)
+    fig.suptitle("Biweekly body weight, intake, temperature, and humidity",
+                 fontsize=15, weight="bold", y=0.995)
+    fig.text(0.01, 0.012,
+             "Each point is a 14-day mean. Weight is averaged within rat first; "
+             "intake is per rat per day. " + source_note,
+             fontsize=7.5, color="#4B5563", wrap=True)
+    fig.tight_layout(rect=(0.035, 0.055, 0.99, 0.92))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
 def generate(data):
     """Write weekly trial and occupancy graphs into one PDF plus CSV summaries."""
     required = {"ratvillage", "subject", "datetime"}
@@ -1316,6 +1558,10 @@ def generate(data):
     category_summary_path = directory / "Trials_Per_Day_By_Experiment_Summary.csv"
     category_period_summary.to_csv(category_summary_path, index=False, encoding="utf-8-sig")
     LOGGER.info("Saved full-period category averages to %s", category_summary_path)
+    biweekly_measures, environment_source_note = _biweekly_measure_summary()
+    biweekly_measure_path = directory / "Biweekly_Animal_Environment_Summary.csv"
+    biweekly_measures.to_csv(biweekly_measure_path, index=False, encoding="utf-8-sig")
+    LOGGER.info("Saved biweekly animal and environment averages to %s", biweekly_measure_path)
     boxplot_subject_rates = _boxplot_subject_rates(frame)
     rat_details = pd.read_excel(
         settings.RAT_HEALTH_FILE,
@@ -1334,6 +1580,7 @@ def generate(data):
         _draw_overall_trials_comparison(pdf, weekly)
         _draw_experiment_comparison(pdf, weekly, experiment_weekly)
         _draw_category_period_summary(pdf, category_period_summary)
+        _draw_biweekly_measure_plot(pdf, biweekly_measures, environment_source_note)
         _draw_boxplot_pages(pdf, boxplot_subject_rates)
         _draw_comparison_summary_pages(pdf, rat_details, boxplot_subject_rates)
     return pdf_path, csv_path
