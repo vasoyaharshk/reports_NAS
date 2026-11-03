@@ -1125,8 +1125,21 @@ def generate(data):
     missing = required - set(data.columns)
     if missing:
         raise ValueError(f"Weekly report missing columns: {sorted(missing)}")
-    if not pd.api.types.is_datetime64_any_dtype(data["datetime"]) or data["datetime"].dt.tz is None:
-        raise ValueError("Weekly report requires timezone-aware parsed datetime.")
+    if not pd.api.types.is_datetime64_any_dtype(data["datetime"]):
+        data = data.copy()
+        try:
+            # Prepared CSVs can contain ISO timestamps with and without
+            # fractional seconds. Ask pandas to parse each value separately.
+            data["datetime"] = pd.to_datetime(
+                data["datetime"], format="mixed", utc=True
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Weekly report could not parse the datetime column. "
+                "Expected ISO timestamps, which may have mixed precision."
+            ) from exc
+    elif data["datetime"].dt.tz is None:
+        raise ValueError("Weekly report requires timezone-aware datetime values.")
 
     frame = data.dropna(subset=["ratvillage", "subject", "datetime"]).copy()
     if frame.empty:
