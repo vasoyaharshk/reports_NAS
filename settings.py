@@ -56,7 +56,7 @@ Cognitive_bias = True
 INCLUDE_UNCLASSIFIED_TASKS = True
 
 # Kept configurable to mirror the exclusions in the current R sorting script.
-EXCLUDED_SUBJECTS = ("m2", "m3", "luna", "rachel", "geralt", "erza", "ross", "chand")
+EXCLUDED_SUBJECTS = ("m1", "none", "None", "m2", "m3")
 
 # Optional workbook containing sheets named ratvillage1, ratvillage2, ratvillage3
 # with date and inactive_hours columns. Leave as None if it is not available.
