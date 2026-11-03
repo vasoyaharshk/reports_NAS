@@ -1,6 +1,7 @@
 """Weekly trial and occupancy reports, grouped by Rat Village."""
 from pathlib import Path
 import logging
+import textwrap
 
 import matplotlib
 matplotlib.use("Agg")
@@ -20,13 +21,78 @@ EXPERIMENT_FAMILIES = (
     "Cognitive Bias",
 )
 
+# Curated diary changes that are relevant to interpreting weekly trial rates.
+# Keep these labels short enough for the chart callouts while preserving the
+# practical change and its date.
+INTERVENTION_EVENTS = {
+    "RV1": [
+        ("2024-04-30", "Sessions: inter-session interval 5 to 3 h"),
+        ("2024-06-04", "Reward: sucrose concentration 20% to 15%"),
+        ("2024-06-18", "CA water 3% to 4%; interval changed to 4 h"),
+        ("2024-06-27", "Reward volume 25 to 50 µL"),
+        ("2024-06-29", "Gal and Sparky 50 µL; other rats 25 µL"),
+        ("2024-07-30", "Ciri and Sorrel assigned 40 µL"),
+        ("2024-08-21", "CA water 4% to 5%"),
+        ("2024-09-04", "Ciri, Sorrel and Luna reduced to 25 µL"),
+        ("2024-09-17", "Stimulus mask removed"),
+        ("2024-09-27", "Ciri, Joy, Luna and Sorrel reward 25 to 50 µL"),
+    ],
+    "RV2": [
+        ("2025-06-23", "All rats: 2 Automatic Water sessions, 300 µL/trial"),
+        ("2025-06-25", "Reward volume increased to 140 µL"),
+        ("2025-07-04", "TouchTeaching advancement criterion reduced to 50 trials"),
+        ("2025-07-22", "CA water 3% to 3.5%"),
+        ("2025-07-28", "Side walls installed; speakers repositioned"),
+        ("2025-08-18", "Daily food allocation set to 160 g"),
+        ("2025-08-27", "Sucrose concentration 10% to 15%"),
+        ("2025-08-28", "Daily food allocation 160 to 180 g"),
+        ("2025-09-05", "Soundproofing completed"),
+        ("2025-09-22", "Door 3 became functional"),
+        ("2025-09-26", "Reward changed to plain water"),
+        ("2025-10-14", "Plain-water reward 140 to 70 µL"),
+        ("2025-10-17", "Automatic Water disabled"),
+        ("2025-10-30", "Plain-water reward 70 to 40 µL"),
+        ("2025-10-31", "Plain-water reward 40 to 280 µL"),
+        ("2025-11-14", "Reward changed to 220 µL of 5% sucrose"),
+        ("2026-04-30", "Cognitive Bias: outside touches became retryable"),
+        ("2026-10-19", "All rats on TouchTeaching; reward to 20 µL of 5% sucrose"),
+        ("2026-10-22", "Sucrose increased from 5% to 10%; volume stayed 20 µL"),
+        ("2026-10-26", "Reward volume increased from 20 to 75 µL"),
+        ("2026-10-30", "Reward volume increased from 75 to 100 µL"),
+    ],
+    "RV3": [
+        ("2026-10-19", "All rats on TouchTeaching; reward set to 20 µL; CA water 1% to 2%"),
+        ("2026-10-22", "Sucrose increased from 5% to 10%"),
+        ("2026-10-26", "Reward volume increased from 20 to 75 µL"),
+        ("2026-10-30", "Reward volume reduced from 75 to 70 µL"),
+    ],
+}
+
+# Concentration windows are local Spain time and end-exclusive. Change dates
+# without a recorded time are excluded on the transition day to avoid mixing
+# two reward or CA conditions in one daily rate.
+CONCENTRATION_WINDOWS = [
+    ("RV1", "sucrose", "20%", None, "2024-06-04 00:00"),
+    ("RV1", "sucrose", "15%", "2024-06-05 00:00", None),
+    ("RV2", "sucrose", "10%", None, "2025-08-27 00:00"),
+    ("RV2", "sucrose", "15%", "2025-08-28 00:00", "2025-09-26 00:00"),
+    ("RV2", "sucrose", "10%", "2026-10-22 16:00", None),
+    # This is the clearly dated 2026 5% period. The 14-Nov-2025 5% entry has
+    # no recorded stop date before the diary later reports plain water.
+    ("RV2", "sucrose", "5%", "2026-10-20 00:00", "2026-10-22 16:00"),
+    ("RV3", "sucrose", "5%", None, "2026-10-22 16:00"),
+    ("RV3", "sucrose", "10%", "2026-10-22 16:00", None),
+    ("RV1", "CA water", "3%", None, "2024-06-18 16:00"),
+    ("RV1", "CA water", "5%", "2024-08-21 17:00", None),
+    ("RV2", "CA water", "3%", None, "2025-07-22 12:00"),
+    ("RV3", "CA water", "1%", None, "2026-10-19 00:00"),
+]
+
 
 def _experiment_family(frame):
     """Classify trials into the four experiment families used in the plot."""
     task = frame.get("task", pd.Series("", index=frame.index)).astype("string")
-    source = frame.get("dataset", pd.Series("", index=frame.index)).astype("string")
     task_key = task.str.lower().str.replace(r"[^a-z0-9]+", "", regex=True)
-    source_key = source.str.lower().fillna("")
 
     # Unmatched tasks are excluded from this experiment-family breakdown.
     family = pd.Series(pd.NA, index=frame.index, dtype="string")
@@ -49,7 +115,6 @@ def _experiment_family(frame):
         na=False,
     )
     family.loc[early_training_task] = "Early Training"
-    family.loc[source_key.str.startswith("working_memory")] = "Working Memory"
     return family
 
 
@@ -261,6 +326,472 @@ def _summarise_rates(rates, period_keys):
     )
 
 
+def _boxplot_subject_rates(frame):
+    """Return one Method 1 daily rate per rat for each requested measure."""
+    records = []
+
+    def add_trial_rate(source, metric, category_column):
+        if source.empty:
+            return
+        keys = ["village", "subject", category_column, "day"]
+        daily_counts = source.groupby(keys, as_index=False).size()
+        rates = (daily_counts.groupby(
+            ["village", "subject", category_column], as_index=False
+        ).agg(total_trials=("size", "sum"), trial_days=("day", "nunique")))
+        rates["value"] = rates["total_trials"] / rates["trial_days"]
+        rates["metric"] = metric
+        rates = rates.rename(columns={category_column: "category"})
+        records.append(rates[["village", "subject", "metric", "category", "value"]])
+
+    all_trials = frame.assign(plot_category="All trials")
+    add_trial_rate(all_trials, "Trials per rat per trial day", "plot_category")
+
+    experiment_frame = frame.copy()
+    experiment_frame["experiment"] = _experiment_family(experiment_frame)
+    experiment_frame = experiment_frame.loc[experiment_frame["experiment"].notna()].copy()
+    experiment_labels = {
+        "Working Memory": "Working Memory",
+        "Probability": "Probabilistic Inference",
+        "Cognitive Bias": "Cognitive Bias",
+    }
+    experiment_frame = experiment_frame.loc[
+        experiment_frame["experiment"].isin(experiment_labels)
+    ].copy()
+    experiment_frame["plot_category"] = experiment_frame["experiment"].map(experiment_labels)
+    add_trial_rate(experiment_frame, "Trials per rat per trial day by experiment", "plot_category")
+
+    month = frame["day"].dt.month
+    seasonal = frame.assign(
+        plot_category=np.select(
+            [month.isin([12, 1, 2]), month.isin([3, 4, 5]),
+             month.isin([6, 7, 8]), month.isin([9, 10, 11])],
+            ["Winter", "Spring", "Summer", "Autumn"],
+            default="Unknown",
+        )
+    )
+    add_trial_rate(seasonal, "Trials per rat per trial day by season", "plot_category")
+
+    # Session IDs are present in the trial exports and identify sessions
+    # across task rows. Count each rat/session once, then divide by the rat's
+    # distinct trial dates, using the same Method 1 denominator.
+    observed_days = frame.groupby(["village", "subject"])["day"].nunique()
+    if "session" in frame.columns:
+        sessions = frame[["village", "subject", "session"]].copy()
+        sessions["session_key"] = sessions["session"].astype("string").str.strip()
+        sessions = sessions.dropna(subset=["session_key"])
+        sessions = sessions.loc[sessions["session_key"].ne("")]
+        sessions = sessions.drop_duplicates(["village", "subject", "session_key"])
+        session_rates = sessions.groupby(["village", "subject"]).size().rename(
+            "total_sessions"
+        ).to_frame().join(observed_days.rename("trial_days"), how="inner").reset_index()
+        session_rates["value"] = session_rates["total_sessions"] / session_rates["trial_days"]
+        session_rates["metric"] = "Sessions per rat per trial day"
+        session_rates["category"] = "Sessions"
+        records.append(session_rates[["village", "subject", "metric", "category", "value"]])
+    else:
+        LOGGER.warning("Session IDs are missing; the sessions box plot will show no data.")
+
+    # Calculate condition-specific Method 1 rates from documented intervention
+    # windows. Several separate periods at the same concentration are combined
+    # before one value per rat is calculated.
+    condition_parts = {}
+    for village, kind, level, start, end in CONCENTRATION_WINDOWS:
+        subset = frame.loc[frame["village"].eq(village)].copy()
+        mask = pd.Series(True, index=subset.index)
+        if start is not None:
+            lower = pd.Timestamp(start).tz_localize(settings.REPORT_TIMEZONE)
+            mask &= subset["local_datetime"].ge(lower)
+        if end is not None:
+            upper = pd.Timestamp(end).tz_localize(settings.REPORT_TIMEZONE)
+            mask &= subset["local_datetime"].lt(upper)
+        subset = subset.loc[mask].copy()
+        condition_parts.setdefault((village, kind, level), []).append(subset)
+
+    condition_labels = {
+        "sucrose": ("Trials per rat per trial day by sucrose concentration", "sucrose"),
+        "CA water": ("Trials per rat per trial day by CA water concentration", "CA water"),
+    }
+    for (_, kind, level), parts in condition_parts.items():
+        subset = pd.concat(parts, ignore_index=False)
+        if subset.empty:
+            continue
+        metric, _ = condition_labels[kind]
+        subset["plot_category"] = level
+        add_trial_rate(subset, metric, "plot_category")
+
+    if not records:
+        return pd.DataFrame(columns=["village", "subject", "metric", "category", "value"])
+    return pd.concat(records, ignore_index=True).dropna(subset=["value"])
+
+
+def _boxplot_summary(subject_rates):
+    """Summarise the subject-level distributions displayed by the box plots."""
+    if subject_rates.empty:
+        return pd.DataFrame(columns=[
+            "village", "metric", "category", "subjects", "mean", "minimum", "maximum",
+            "q1", "median", "q3",
+        ])
+    return (subject_rates.groupby(["village", "metric", "category"], as_index=False)
+            .agg(subjects=("subject", "nunique"), mean=("value", "mean"),
+                 minimum=("value", "min"), maximum=("value", "max"),
+                 q1=("value", lambda values: values.quantile(0.25)),
+                 median=("value", "median"),
+                 q3=("value", lambda values: values.quantile(0.75))))
+
+
+def _draw_boxplot_panel(ax, subject_rates, metric, categories, village_order):
+    """Draw grouped box plots with mean markers and min/max whiskers."""
+    palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
+    positions = []
+    values = []
+    colors = []
+    labels = []
+    missing_positions = []
+    box_width = 0.62 if len(categories) == 1 else 0.62 / max(len(village_order), 1)
+    offsets = np.linspace(-0.32, 0.32, len(village_order)) if village_order else []
+
+    for category_index, category in enumerate(categories):
+        for village_index, village in enumerate(village_order):
+            subset = subject_rates.loc[
+                subject_rates["metric"].eq(metric)
+                & subject_rates["category"].eq(category)
+                & subject_rates["village"].eq(village)
+            ]["value"].dropna().astype(float)
+            if len(categories) == 1:
+                position = village_index + 1
+            else:
+                position = category_index + 1 + offsets[village_index]
+            if subset.empty:
+                missing_positions.append(position)
+                continue
+            positions.append(position)
+            values.append(subset.to_numpy())
+            colors.append(palette.get(village, "#6B7280"))
+            labels.append((position, village, subset))
+
+    if values:
+        artists = ax.boxplot(
+            values,
+            positions=positions,
+            widths=box_width * 0.85,
+            patch_artist=True,
+            showmeans=True,
+            meanline=False,
+            whis=(0, 100),
+            showfliers=False,
+            medianprops={"color": "#111827", "linewidth": 1.2},
+            meanprops={"marker": "D", "markerfacecolor": "white",
+                       "markeredgecolor": "#111827", "markersize": 5},
+            whiskerprops={"color": "#374151", "linewidth": 1.0},
+            capprops={"color": "#374151", "linewidth": 1.0},
+        )
+        for box, color in zip(artists["boxes"], colors):
+            box.set_facecolor(color)
+            box.set_alpha(0.62)
+
+        for position, _, subject_values in labels:
+            # Subject points keep small groups and collapsed boxes interpretable.
+            offsets_for_points = ((np.arange(len(subject_values)) % 5) - 2) * box_width * 0.12
+            ax.scatter(position + offsets_for_points, subject_values,
+                       s=13, color="#111827", alpha=0.58, zorder=4)
+
+    if len(categories) == 1:
+        centers = np.arange(1, len(village_order) + 1)
+        tick_labels = village_order
+    else:
+        centers = np.arange(1, len(categories) + 1)
+        tick_labels = categories
+    ax.set_xticks(centers)
+    ax.set_xticklabels(tick_labels, rotation=0, fontsize=8)
+    ax.set_xlim(0.5, len(centers) + 0.5)
+    ax.set_title(metric, fontsize=11, weight="bold")
+    ax.set_ylabel("Per-rat average per observed trial day")
+    ax.grid(axis="y", alpha=0.22)
+    ax.set_axisbelow(True)
+    ax.set_ylim(bottom=0)
+    ymax = ax.get_ylim()[1]
+    for position in missing_positions:
+        ax.text(position, ymax * 0.035, "No data", rotation=90,
+                ha="center", va="bottom", fontsize=7, color="#6B7280")
+    return palette
+
+
+def _draw_boxplot_pages(pdf, subject_rates):
+    """Add overall, task-family, and seasonal distributions to the PDF."""
+    village_order = ["RV1", "RV2", "RV3"]
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    palette = {"RV1": "#0072B2", "RV2": "#D55E00", "RV3": "#009E73"}
+    legend = [Patch(facecolor=palette[v], alpha=0.62, label=v) for v in village_order]
+    legend.append(Line2D([0], [0], marker="D", linestyle="None",
+                         markerfacecolor="white", markeredgecolor="#111827",
+                         label="Mean"))
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), squeeze=False)
+    _draw_boxplot_panel(axes[0, 0], subject_rates,
+                        "Trials per rat per trial day", ["All trials"], village_order)
+    _draw_boxplot_panel(axes[1, 0], subject_rates,
+                        "Sessions per rat per trial day", ["Sessions"], village_order)
+    for ax in axes[:, 0]:
+        ax.legend(handles=legend, loc="upper right", frameon=False, ncol=3)
+    fig.suptitle("Full-period per-rat distributions: overall measures",
+                 fontsize=14, weight="bold")
+    fig.text(0.01, 0.01,
+             "Boxes show the interquartile range, the diamond marks the mean, "
+             "and whiskers span the minimum to maximum. Each point is one rat.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.95))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+    experiment_categories = ["Working Memory", "Probabilistic Inference", "Cognitive Bias"]
+    fig, axes = plt.subplots(1, 3, figsize=(16, 6), squeeze=False)
+    for ax, category in zip(axes[0], experiment_categories):
+        _draw_boxplot_panel(ax, subject_rates,
+                            "Trials per rat per trial day by experiment",
+                            [category], village_order)
+        ax.set_title(category, fontsize=11, weight="bold")
+        ax.legend(handles=legend, loc="upper right", frameon=False, ncol=1)
+    fig.suptitle("Full-period per-rat average trials per day by experiment",
+                 fontsize=14, weight="bold")
+    fig.text(0.01, 0.01,
+             "Boxes show the interquartile range, the diamond marks the mean, "
+             "and whiskers span the minimum to maximum. Each point is one rat.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+    sucrose_levels = ["20%", "15%", "10%", "5%"]
+    fig, ax = plt.subplots(figsize=(15, 7))
+    _draw_boxplot_panel(
+        ax, subject_rates,
+        "Trials per rat per trial day by sucrose concentration",
+        sucrose_levels, village_order,
+    )
+    ax.legend(handles=legend, loc="upper right", frameon=False, ncol=4)
+    fig.suptitle("Average trials per day by reward sucrose concentration",
+                 fontsize=14, weight="bold")
+    fig.text(0.01, 0.01,
+             "Documented concentration windows only. Boxes show the interquartile range; "
+             "diamonds mark means and whiskers span minimum to maximum.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+    ca_levels = ["3%", "5%", "1%"]
+    fig, ax = plt.subplots(figsize=(15, 7))
+    _draw_boxplot_panel(
+        ax, subject_rates,
+        "Trials per rat per trial day by CA water concentration",
+        ca_levels, village_order,
+    )
+    ax.legend(handles=legend, loc="upper right", frameon=False, ncol=4)
+    fig.suptitle("Average trials per day by CA water concentration",
+                 fontsize=14, weight="bold")
+    fig.text(0.01, 0.01,
+             "Documented concentration windows only. Boxes show the interquartile range; "
+             "diamonds mark means and whiskers span minimum to maximum.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+    seasons = ["Summer", "Winter", "Autumn", "Spring"]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), squeeze=False)
+    for ax, season in zip(axes.flat, seasons):
+        _draw_boxplot_panel(ax, subject_rates,
+                            "Trials per rat per trial day by season",
+                            [season], village_order)
+        ax.set_title(season, fontsize=11, weight="bold")
+        ax.legend(handles=legend, loc="upper right", frameon=False, ncol=3)
+    fig.suptitle("Full-period per-rat average trials per day by season",
+                 fontsize=14, weight="bold")
+    fig.text(0.01, 0.01,
+             "Boxes show the interquartile range, the diamond marks the mean, "
+             "and whiskers span the minimum to maximum. Each point is one rat.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _comparison_stat(subject_rates, village, metric, category):
+    subset = subject_rates.loc[
+        subject_rates["village"].eq(village)
+        & subject_rates["metric"].eq(metric)
+        & subject_rates["category"].eq(category), "value"
+    ].dropna()
+    if subset.empty:
+        return "No data"
+    return (
+        f"{subset.mean():.1f} [{subset.min():.1f}–{subset.max():.1f}], "
+        f"n={subset.size}"
+    )
+
+
+def _draw_comparison_summary_pages(pdf, details, subject_rates):
+    """Add village characteristics and mean/min/max summary tables to the PDF."""
+    village_order = ["RV1", "RV2", "RV3"]
+    roster = details.copy()
+    roster["ratvillage_number"] = pd.to_numeric(roster["ratvillage_number"], errors="coerce")
+    roster["subject"] = roster["rat_id"].astype("string").str.strip()
+    roster = roster.loc[
+        roster["ratvillage_number"].isin([1, 2, 3])
+        & roster["subject"].notna() & roster["subject"].ne("")
+    ].copy()
+    roster["village"] = "RV" + roster["ratvillage_number"].astype(int).astype(str)
+    roster["exp_start_date"] = pd.to_datetime(roster["exp_start_date"], errors="coerce")
+    roster["age_start_of_exp_weeks"] = pd.to_numeric(
+        roster["age_start_of_exp_weeks"], errors="coerce")
+
+    def cohort_description(village):
+        members = roster.loc[roster["village"].eq(village)]
+        if members.empty:
+            return "No rat details"
+        starts = members.groupby("exp_start_date").size().sort_index()
+        if village == "RV1" and len(starts) > 1:
+            return f"{int(starts.iloc[0])} initially; {len(members)} total"
+        return str(len(members))
+
+    def age_description(village):
+        ages = roster.loc[roster["village"].eq(village), "age_start_of_exp_weeks"].dropna()
+        if ages.empty:
+            return "No age data"
+        low, high = ages.min(), ages.max()
+        return f"{low:g} weeks" if low == high else f"{low:g}–{high:g} weeks"
+
+    def gender_description(village):
+        genders = (roster.loc[roster["village"].eq(village), "gender"]
+                   .dropna().astype(str).str.strip().str.lower().unique())
+        return ", ".join(sorted(genders)) if len(genders) else "No data"
+
+    context = {
+        "Number of subjects": {
+            v: cohort_description(v) for v in village_order
+        },
+        "Gender": {
+            v: gender_description(v) for v in village_order
+        },
+        "Age at experiment start": {
+            v: age_description(v) for v in village_order
+        },
+        "CA water progression": {
+            "RV1": "3% → 4% → 5%",
+            "RV2": "3% → 3.5% → 4%",
+            "RV3": "1% → 2%",
+        },
+        "Reward progression": {
+            "RV1": "20% sucrose → 15%",
+            "RV2": "10% → 15% → plain water → 5%; Oct 2026: 5% → 10%",
+            "RV3": "5% → 10%",
+        },
+    }
+    rows = [[name, *(context[name][v] for v in village_order)] for name in context]
+
+    summary_metrics = [
+        ("Average trials per day per subject", "Trials per rat per trial day", "All trials"),
+        ("Average sessions per day per subject", "Sessions per rat per trial day", "Sessions"),
+        ("Working Memory", "Trials per rat per trial day by experiment", "Working Memory"),
+        ("Probabilistic Inference", "Trials per rat per trial day by experiment", "Probabilistic Inference"),
+        ("Cognitive Bias", "Trials per rat per trial day by experiment", "Cognitive Bias"),
+        ("Trials in Summer", "Trials per rat per trial day by season", "Summer"),
+        ("Trials in Winter", "Trials per rat per trial day by season", "Winter"),
+        ("Trials in Autumn", "Trials per rat per trial day by season", "Autumn"),
+        ("Trials in Spring", "Trials per rat per trial day by season", "Spring"),
+    ]
+    for label, metric, category in summary_metrics:
+        rows.append([
+            label,
+            *(_comparison_stat(subject_rates, v, metric, category) for v in village_order),
+        ])
+
+    fig, ax = plt.subplots(figsize=(16, 9))
+    ax.axis("off")
+    table = ax.table(
+        cellText=rows,
+        colLabels=["Difference / measure", *village_order],
+        colWidths=[0.31, 0.23, 0.23, 0.23],
+        cellLoc="left",
+        loc="center",
+        bbox=[0, 0.08, 1, 0.82],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8.5)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1F3A5F")
+            cell.set_text_props(color="white", weight="bold")
+        elif row % 2:
+            cell.set_facecolor("#F3F6F9")
+        else:
+            cell.set_facecolor("white")
+        cell.set_edgecolor("#D1D5DB")
+    fig.suptitle("Village characteristics and full-period averages",
+                 fontsize=15, weight="bold")
+    fig.text(0.01, 0.025,
+             "Average entries show mean [minimum–maximum] across rats, with n as the number "
+             "of rats contributing. Each rat's value is its total divided by its distinct trial days.",
+             fontsize=8, color="#4B5563")
+    fig.tight_layout(rect=(0, 0.04, 1, 0.94))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+    concentration_rows = []
+    for level in ["20%", "15%", "10%", "5%"]:
+        concentration_rows.append([
+            f"Sucrose reward {level}",
+            *(_comparison_stat(
+                subject_rates, v,
+                "Trials per rat per trial day by sucrose concentration", level,
+            ) for v in village_order),
+        ])
+    for level in ["3%", "5%", "1%"]:
+        concentration_rows.append([
+            f"CA water {level}",
+            *(_comparison_stat(
+                subject_rates, v,
+                "Trials per rat per trial day by CA water concentration", level,
+            ) if not (v == "RV2" and level == "5%") else "Not recorded in diary"
+              for v in village_order),
+        ])
+
+    fig, ax = plt.subplots(figsize=(16, 7))
+    ax.axis("off")
+    table = ax.table(
+        cellText=concentration_rows,
+        colLabels=["Intervention period", *village_order],
+        colWidths=[0.31, 0.23, 0.23, 0.23],
+        cellLoc="left",
+        loc="center",
+        bbox=[0, 0.15, 1, 0.72],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_facecolor("#1F3A5F")
+            cell.set_text_props(color="white", weight="bold")
+        elif row % 2:
+            cell.set_facecolor("#F3F6F9")
+        else:
+            cell.set_facecolor("white")
+        cell.set_edgecolor("#D1D5DB")
+    fig.suptitle("Average trials during documented reward and CA concentrations",
+                 fontsize=15, weight="bold")
+    fig.text(0.01, 0.04,
+             "Values show mean [minimum–maximum] across rats, n=number of rats. "
+             "Transition dates without a recorded time are excluded. RV2's 5% sucrose "
+             "value uses only the clearly dated 20–22 Oct 2026 window; the earlier 14-Nov-2025 "
+             "5% entry has no recorded stop date. RV2 CA water was recorded as 3%→3.5%; "
+             "project notes later list 4%, with no 5% CA period recorded.",
+             fontsize=8, color="#4B5563", wrap=True)
+    fig.tight_layout(rect=(0, 0.12, 1, 0.94))
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
 def _nice_trial_tick_step(maximum):
     """Choose readable y-axis intervals independently for each year facet."""
     if pd.isna(maximum) or maximum <= 10:
@@ -276,16 +807,102 @@ def _nice_trial_tick_step(maximum):
     return 100
 
 
+def _events_for_year(village, year):
+    """Return the curated intervention events for one village and year."""
+    return [
+        (pd.Timestamp(date), label)
+        for date, label in INTERVENTION_EVENTS.get(village, [])
+        if pd.Timestamp(date).year == int(year)
+    ]
+
+
+def _year_intervention_layout(weekly, village, year):
+    """Place event labels over their dates, assigning lanes to avoid overlap."""
+    year_data = weekly.loc[pd.to_datetime(weekly["week_start"]).dt.year.eq(int(year))]
+    events = _events_for_year(village, year)
+    x_start = pd.Timestamp(year_data["week_start"].min())
+    x_end = pd.Timestamp(year_data["week_start"].max())
+    if events:
+        x_start = min(x_start, min(date for date, _ in events))
+        x_end = max(x_end, max(date for date, _ in events))
+    if x_end <= x_start:
+        x_end = x_start + pd.Timedelta(days=1)
+
+    width = 0.14
+    gap = 0.012
+    lane_right_edges = []
+    layout = []
+    span = (x_end - x_start).total_seconds()
+    for event_date, label in events:
+        x_fraction = (event_date - x_start).total_seconds() / span
+        lane = next(
+            (i for i, right_edge in enumerate(lane_right_edges)
+             if x_fraction - width / 2 >= right_edge + gap),
+            None,
+        )
+        if lane is None:
+            lane = len(lane_right_edges)
+            lane_right_edges.append(-np.inf)
+        lane_right_edges[lane] = x_fraction + width / 2
+        layout.append((event_date, label, x_fraction, lane))
+    return x_start, x_end, layout, len(lane_right_edges)
+
+
+def _annotate_interventions(ax, layout, lane_count, data_max):
+    """Mark diary interventions and add arrowed explanatory callout boxes."""
+    if not layout:
+        ax.set_ylim(bottom=0)
+        return
+
+    data_max = float(data_max) if pd.notna(data_max) and data_max > 0 else 1.0
+    # Reserve the upper half of the axes for readable event labels. Weekly
+    # values remain on a linear scale and are still compared within each year.
+    axis_max = data_max / 0.50
+    ax.set_ylim(0, axis_max)
+
+    for event_date, _, _, _ in layout:
+        ax.axvline(event_date, color="#B45309", linestyle="--", linewidth=1.0,
+                   alpha=0.78, zorder=1)
+
+    row_step = min(0.12, 0.56 / max(lane_count, 1))
+    for event_date, label, x_text, lane in layout:
+        y_text = 0.96 - lane * row_step
+        card_text = f"{event_date:%d %b %Y}\n{textwrap.fill(label, width=25)}"
+        ax.annotate(
+            card_text,
+            xy=(event_date, data_max * 0.52),
+            xycoords="data",
+            xytext=(x_text, y_text),
+            textcoords="axes fraction",
+            ha="center",
+            va="center",
+            fontsize=6.8,
+            color="#1F2937",
+            bbox={"boxstyle": "round,pad=0.32", "fc": "white",
+                  "ec": "#D97706", "lw": 0.8, "alpha": 0.96},
+            arrowprops={"arrowstyle": "-|>", "color": "#9A3412",
+                        "lw": 0.75, "shrinkA": 3, "shrinkB": 1},
+            annotation_clip=False,
+            zorder=5,
+        )
+
+
 def _draw_overall_trials_year_facets(pdf, weekly, village):
     """Draw the village-wide weekly average by year."""
     years = sorted(pd.to_datetime(weekly["week_start"]).dt.year.unique())
     if not years:
         return
 
+    event_layouts = {
+        int(year): _year_intervention_layout(weekly, village, year)
+        for year in years
+    }
+    max_event_rows = max((entry[3] for entry in event_layouts.values()), default=0)
+    panel_height = max(5.5, 4.0 + 0.72 * max_event_rows)
     fig, axes = plt.subplots(
         len(years),
         1,
-        figsize=(16, max(5.5, 4.2 * len(years))),
+        figsize=(16, panel_height * len(years)),
         squeeze=False,
         sharex=False,
         sharey=False,
@@ -300,9 +917,11 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
         ax.plot(x, average, color="#1e3a8a", linewidth=2.4, marker="o",
                 markersize=2.5, label="Average")
 
+        x_start, x_end, layout, lane_count = event_layouts[int(year)]
+        ax.set_xlim(x_start, x_end)
+        _annotate_interventions(ax, layout, lane_count, average.max(skipna=True))
         _shade_seasons(ax, int(year))
         ax.set_ylabel("Trials per rat per observed trial day")
-        ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         ticks = subset["week_start"]
         ax.set_xticks(ticks)
@@ -335,10 +954,16 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
     if not years:
         return
 
+    event_layouts = {
+        int(year): _year_intervention_layout(weekly, village, year)
+        for year in years
+    }
+    max_event_rows = max((entry[3] for entry in event_layouts.values()), default=0)
+    panel_height = max(5.5, 4.0 + 0.72 * max_event_rows)
     fig, axes = plt.subplots(
         len(years),
         1,
-        figsize=(16, max(5.5, 4.2 * len(years))),
+        figsize=(16, panel_height * len(years)),
         squeeze=False,
         sharex=False,
         sharey=False,
@@ -375,9 +1000,12 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
                 label=experiment,
             )
 
+        experiment_max = year_experiments["mean_trials_per_subject_day"].max(skipna=True)
+        x_start, x_end, layout, lane_count = event_layouts[int(year)]
+        ax.set_xlim(x_start, x_end)
+        _annotate_interventions(ax, layout, lane_count, experiment_max)
         _shade_seasons(ax, int(year))
         ax.set_ylabel("Trials per rat per observed trial day")
-        ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         # Show every observed week, rather than only one tick every four weeks.
         ticks = village_weeks["week_start"]
@@ -388,7 +1016,7 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
             fontsize=7,
         )
         ax.set_xlabel("Week starting Monday")
-        year_max = year_experiments["mean_trials_per_subject_day"].max(skipna=True)
+        year_max = experiment_max
         ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(year_max)))
         ax.grid(axis="y", alpha=0.22)
         ax.set_axisbelow(True)
@@ -708,6 +1336,16 @@ def generate(data):
     category_summary_path = directory / "Trials_Per_Day_By_Experiment_Summary.csv"
     category_period_summary.to_csv(category_summary_path, index=False, encoding="utf-8-sig")
     LOGGER.info("Saved full-period category averages to %s", category_summary_path)
+    boxplot_subject_rates = _boxplot_subject_rates(frame)
+    rat_details = pd.read_excel(
+        settings.RAT_HEALTH_FILE,
+        sheet_name=settings.RAT_DETAILS_SHEET,
+    )
+    boxplot_subject_path = directory / "Weekly_Daily_Trials_Boxplot_By_Subject.csv"
+    boxplot_subject_rates.to_csv(boxplot_subject_path, index=False, encoding="utf-8-sig")
+    boxplot_summary_path = directory / "Weekly_Daily_Trials_Boxplot_Summary.csv"
+    _boxplot_summary(boxplot_subject_rates).to_csv(
+        boxplot_summary_path, index=False, encoding="utf-8-sig")
     daily_path = directory / "Weekly_Daily_Occupancy.csv"
     daily.to_csv(daily_path, index=False, encoding="utf-8-sig")
 
@@ -718,5 +1356,7 @@ def generate(data):
             _draw_overall_trials_year_facets(pdf, subset, village)
             _draw_year_facets(pdf, subset, experiment_weekly, village)
             _draw_category_period_summary(pdf, category_period_summary, village)
+        _draw_boxplot_pages(pdf, boxplot_subject_rates)
+        _draw_comparison_summary_pages(pdf, rat_details, boxplot_subject_rates)
     return pdf_path, csv_path
 
