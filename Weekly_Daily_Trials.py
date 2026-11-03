@@ -83,9 +83,15 @@ CONCENTRATION_WINDOWS = [
     ("RV3", "sucrose", "5%", None, "2026-10-22 16:00"),
     ("RV3", "sucrose", "10%", "2026-10-22 16:00", None),
     ("RV1", "CA water", "3%", None, "2024-06-18 16:00"),
+    ("RV1", "CA water", "4%", "2024-06-18 16:00", "2024-08-21 17:00"),
     ("RV1", "CA water", "5%", "2024-08-21 17:00", None),
     ("RV2", "CA water", "3%", None, "2025-07-22 12:00"),
+    ("RV2", "CA water", "3.5%", "2025-07-22 12:00", "2025-07-25 12:00"),
+    # The workbook records 4% and then 5% at the same time; there is no
+    # recorded 4% interval, so the next analyzable condition is 5%.
+    ("RV2", "CA water", "5%", "2025-07-25 12:00", None),
     ("RV3", "CA water", "1%", None, "2026-10-19 00:00"),
+    ("RV3", "CA water", "2%", "2026-10-19 00:00", None),
 ]
 
 
@@ -473,7 +479,7 @@ def _draw_boxplot_panel(ax, subject_rates, metric, categories, village_order):
         artists = ax.boxplot(
             values,
             positions=positions,
-            widths=box_width * 0.85,
+            widths=box_width * 0.68,
             patch_artist=True,
             showmeans=True,
             meanline=False,
@@ -564,14 +570,17 @@ def _draw_boxplot_pages(pdf, subject_rates):
     plt.close(fig)
 
     sucrose_levels = ["20%", "15%", "10%", "5%"]
-    fig, ax = plt.subplots(figsize=(15, 7))
-    _draw_boxplot_panel(
-        ax, subject_rates,
-        "Trials per rat per trial day by sucrose concentration",
-        sucrose_levels, village_order,
-    )
-    ax.legend(handles=legend, loc="upper right", frameon=False, ncol=4)
-    fig.suptitle("Average trials per day by reward sucrose concentration",
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6), sharey=True, squeeze=False)
+    for ax, village in zip(axes[0], village_order):
+        _draw_boxplot_panel(
+            ax, subject_rates,
+            "Trials per rat per trial day by sucrose concentration",
+            sucrose_levels, [village],
+        )
+        ax.set_ylim(0, 150)
+        ax.set_title(village, fontsize=11, weight="bold")
+        ax.set_ylabel("Per-rat average per observed trial day" if village == village_order[0] else "")
+    fig.suptitle("Average trials per day by reward sucrose concentration across Rat Villages",
                  fontsize=14, weight="bold")
     fig.text(0.01, 0.01,
              "Documented concentration windows only. Boxes show the interquartile range; "
@@ -582,14 +591,17 @@ def _draw_boxplot_pages(pdf, subject_rates):
     plt.close(fig)
 
     ca_levels = ["3%", "5%", "1%"]
-    fig, ax = plt.subplots(figsize=(15, 7))
-    _draw_boxplot_panel(
-        ax, subject_rates,
-        "Trials per rat per trial day by CA water concentration",
-        ca_levels, village_order,
-    )
-    ax.legend(handles=legend, loc="upper right", frameon=False, ncol=4)
-    fig.suptitle("Average trials per day by CA water concentration",
+    fig, axes = plt.subplots(1, 3, figsize=(17, 6), sharey=True, squeeze=False)
+    for ax, village in zip(axes[0], village_order):
+        _draw_boxplot_panel(
+            ax, subject_rates,
+            "Trials per rat per trial day by CA water concentration",
+            ca_levels, [village],
+        )
+        ax.set_ylim(0, 150)
+        ax.set_title(village, fontsize=11, weight="bold")
+        ax.set_ylabel("Per-rat average per observed trial day" if village == village_order[0] else "")
+    fig.suptitle("Average trials per day by CA water concentration across Rat Villages",
                  fontsize=14, weight="bold")
     fig.text(0.01, 0.01,
              "Documented concentration windows only. Boxes show the interquartile range; "
@@ -600,11 +612,12 @@ def _draw_boxplot_pages(pdf, subject_rates):
     plt.close(fig)
 
     seasons = ["Summer", "Winter", "Autumn", "Spring"]
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), squeeze=False)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharey=True, squeeze=False)
     for ax, season in zip(axes.flat, seasons):
         _draw_boxplot_panel(ax, subject_rates,
                             "Trials per rat per trial day by season",
                             [season], village_order)
+        ax.set_ylim(0, 150)
         ax.set_title(season, fontsize=11, weight="bold")
         ax.legend(handles=legend, loc="upper right", frameon=False, ncol=3)
     fig.suptitle("Full-period per-rat average trials per day by season",
@@ -963,7 +976,7 @@ def _draw_experiment_comparison(pdf, weekly, experiment_weekly):
         for date, _ in events
     })
 
-    fig, axes = plt.subplots(2, 2, figsize=(17, 10), sharex=True, squeeze=False)
+    fig, axes = plt.subplots(2, 2, figsize=(17, 10), sharex=True, sharey=True, squeeze=False)
     for ax, experiment in zip(axes.flat, EXPERIMENT_FAMILIES):
         subset = experiment_weekly.loc[
             experiment_weekly["experiment"].eq(experiment)
@@ -982,11 +995,8 @@ def _draw_experiment_comparison(pdf, weekly, experiment_weekly):
             ax.axvline(event_date, color="#9A3412", linestyle=":", linewidth=0.55,
                        alpha=0.22, zorder=1)
         _shade_timeline_seasons(ax, timeline_start, timeline_end)
-        value_max = pd.to_numeric(
-            subset["mean_trials_per_subject_day"], errors="coerce"
-        ).max(skipna=True)
-        ax.set_ylim(bottom=0)
-        ax.yaxis.set_major_locator(MultipleLocator(_nice_trial_tick_step(value_max)))
+        ax.set_ylim(0, 150)
+        ax.yaxis.set_major_locator(MultipleLocator(25))
         ax.set_title(experiment, fontsize=11, weight="bold")
         ax.set_ylabel("Trials per rat per observed trial day", fontsize=8)
         ax.grid(axis="y", alpha=0.22)
