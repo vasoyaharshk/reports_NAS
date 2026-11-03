@@ -7,6 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import MultipleLocator
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import settings
@@ -152,6 +153,114 @@ def _box_minutes(frame):
             .groupby(["village", "day"], as_index=False)["box_minutes"].sum())
 
 
+
+def _season_handles():
+    """Northern Hemisphere meteorological seasons."""
+    return [
+        Patch(facecolor="#E5E7EB", label="Winter (Dec–Feb)"),
+        Patch(facecolor="#DFF0DB", label="Spring (Mar–May)"),
+        Patch(facecolor="#FFFFFF", edgecolor="#D1D5DB", label="Summer (Jun–Aug)"),
+        Patch(facecolor="#FCE5D0", label="Autumn (Sep–Nov)"),
+    ]
+
+
+def _shade_seasons(ax, year):
+    """Shade exact seasonal boundaries without expanding the x-axis range."""
+    spans = [
+        (f"{year}-01-01", f"{year}-03-01", "#E5E7EB"),
+        (f"{year}-03-01", f"{year}-06-01", "#DFF0DB"),
+        (f"{year}-06-01", f"{year}-09-01", "#FFFFFF"),
+        (f"{year}-09-01", f"{year}-12-01", "#FCE5D0"),
+        (f"{year}-12-01", f"{year + 1}-01-01", "#E5E7EB"),
+    ]
+    xlimits = ax.get_xlim()
+    for start, end, color in spans:
+        ax.axvspan(pd.Timestamp(start), pd.Timestamp(end),
+                   facecolor=color, alpha=0.85, zorder=-5, linewidth=0)
+    ax.set_xlim(xlimits)
+
+
+def _living_roster(frame):
+    """Rat-day roster from the health workbook; start inclusive, death exclusive."""
+    workbook = Path(settings.RAT_HEALTH_FILE)
+    if not workbook.is_file():
+        raise FileNotFoundError(f"Weekly report needs rat health workbook: {workbook}")
+    details = pd.read_excel(workbook, sheet_name=settings.RAT_DETAILS_SHEET)
+    required = {"ratvillage_number", "rat_id", "exp_start_date", "passed_away_date"}
+    if not required.issubset(details.columns):
+        raise ValueError(f"rat_details missing columns: {sorted(required - set(details.columns))}")
+    details = details.copy()
+    details["subject"] = details["rat_id"].astype("string").str.strip().str.lower()
+    details["ratvillage_number"] = pd.to_numeric(details["ratvillage_number"], errors="coerce")
+    details = details.loc[
+        details["ratvillage_number"].isin([1, 2, 3])
+        & details["subject"].notna() & details["subject"].ne("")
+    ].copy()
+    if details.empty or details.duplicated(["ratvillage_number", "subject"]).any():
+        raise ValueError("Empty or duplicate rat_details subjects")
+    details["village"] = "RV" + details["ratvillage_number"].astype(int).astype(str)
+    for field in ("exp_start_date", "passed_away_date"):
+        details[field] = pd.to_datetime(details[field], errors="coerce").dt.normalize()
+    if details["exp_start_date"].isna().any():
+        raise ValueError("Invalid experiment start date in rat_details")
+    if (details["passed_away_date"].notna()
+        & details["passed_away_date"].lt(details["exp_start_date"])).any():
+        raise ValueError("Death date precedes experiment start in rat_details")
+
+    parts = []
+    for village, trials in frame.groupby("village"):
+        members = details.loc[details["village"].eq(village),
+                              ["village", "subject", "exp_start_date", "passed_away_date"]]
+        if members.empty:
+            raise ValueError(f"No rat health roster for {village}")
+        calendar = pd.DataFrame({"day": pd.date_range(
+            trials["day"].min(), trials["day"].max(), freq="D")})
+        calendar["village"] = village
+        candidates = calendar.merge(members, on="village")
+        alive = candidates.loc[
+            candidates["day"].ge(candidates["exp_start_date"])
+            & (candidates["passed_away_date"].isna()
+               | candidates["day"].lt(candidates["passed_away_date"])),
+            ["village", "subject", "day"]
+        ]
+        parts.append(alive)
+    roster = pd.concat(parts, ignore_index=True)
+    if roster.empty or roster.duplicated(["village", "subject", "day"]).any():
+        raise ValueError("Empty or duplicate living-rat roster")
+    roster["week_start"] = roster["day"] - pd.to_timedelta(
+        roster["day"].dt.weekday, unit="D")
+    return roster
+
+
+def _subject_rates(eligible, trials, period_keys):
+    """Shared Method 1 for both graphs, including explicitly zero-trial rats."""
+    keys = [*period_keys, "subject"]
+    if eligible.duplicated(keys).any():
+        raise ValueError("Duplicate eligible rat-period records")
+    observed = trials.groupby(keys, as_index=False).agg(
+        total_trials=("day", "size"), unique_trial_days=("day", "nunique"))
+    rates = eligible.merge(observed, on=keys, how="left", validate="one_to_one")
+    rates["total_trials"] = rates["total_trials"].fillna(0).astype(int)
+    rates["unique_trial_days"] = rates["unique_trial_days"].fillna(0).astype(int)
+    rates["subject_daily_average"] = (
+        rates["total_trials"]
+        .div(rates["unique_trial_days"].replace(0, np.nan))
+        .fillna(0.0)
+    )
+    return rates
+
+
+def _summarise_rates(rates, period_keys):
+    return (
+        rates.assign(has_trials=rates["total_trials"].gt(0))
+        .groupby(period_keys, as_index=False)
+        .agg(total_trials=("total_trials", "sum"),
+             subjects_with_trials=("has_trials", "sum"),
+             eligible_subjects=("subject", "nunique"),
+             mean_trials_per_subject_day=("subject_daily_average", "mean"))
+    )
+
+
 def _nice_trial_tick_step(maximum):
     """Choose readable y-axis intervals independently for each year facet."""
     if pd.isna(maximum) or maximum <= 10:
@@ -191,7 +300,8 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
         ax.plot(x, average, color="#1e3a8a", linewidth=2.4, marker="o",
                 markersize=2.5, label="Average")
 
-        ax.set_ylabel("Trials per rat per day")
+        _shade_seasons(ax, int(year))
+        ax.set_ylabel("Trials per rat per observed trial day")
         ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         ticks = subset["week_start"]
@@ -212,7 +322,9 @@ def _draw_overall_trials_year_facets(pdf, weekly, village):
         fontsize=15,
         weight="bold",
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.legend(handles=_season_handles(), loc="upper center",
+               bbox_to_anchor=(0.5, 0.96), ncol=4, frameon=False, fontsize=9)
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -263,7 +375,8 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
                 label=experiment,
             )
 
-        ax.set_ylabel("Trials per rat per day")
+        _shade_seasons(ax, int(year))
+        ax.set_ylabel("Trials per rat per observed trial day")
         ax.set_ylim(bottom=0)
         ax.set_title(str(year), loc="left", fontsize=11, weight="bold")
         # Show every observed week, rather than only one tick every four weeks.
@@ -292,13 +405,14 @@ def _draw_year_facets(pdf, weekly, experiment_weekly, village):
         weight="bold",
     )
     fig.legend(
-        handles=legend_handles,
+        handles=legend_handles + _season_handles(),
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.97),
+        bbox_to_anchor=(0.5, 0.96),
         ncol=4,
         frameon=False,
+        fontsize=9,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.tight_layout(rect=(0, 0, 1, 0.88))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
@@ -393,57 +507,79 @@ def generate(data):
     if numbers.isna().any():
         raise ValueError("Could not determine Rat Village for every trial.")
     frame["village"] = "RV" + numbers
+    frame["subject"] = frame["subject"].astype("string").str.strip().str.lower()
+    aliases = {
+        str(old).strip().lower(): str(new).strip().lower()
+        for old, new in getattr(settings, "EVENT_SUBJECT_ALIASES", {}).items()
+    }
+    frame["subject"] = frame["subject"].replace(aliases)
     frame["local_datetime"] = frame["datetime"].dt.tz_convert(settings.REPORT_TIMEZONE)
     frame["day"] = frame["local_datetime"].dt.tz_localize(None).dt.normalize()
+    frame["week_start"] = frame["day"] - pd.to_timedelta(
+        frame["day"].dt.weekday, unit="D")
+
+    roster = _living_roster(frame)
+    matched = frame[["village", "subject", "day"]].drop_duplicates().merge(
+        roster[["village", "subject", "day"]],
+        on=["village", "subject", "day"], how="left",
+        indicator=True, validate="one_to_one")
+    mismatches = matched.loc[matched["_merge"].ne("both")]
+    if not mismatches.empty:
+        raise ValueError(
+            "Trial records do not match a living rat in rat_details. "
+            "Check animal aliases, start and death dates. Examples: "
+            f"{mismatches[['village', 'subject', 'day']].head(8).to_dict('records')}"
+        )
 
     daily = _calendar_and_daily(frame)
+    # Reconstruct the living count from rat_details on every date, including
+    # trial-free days when a death could make the carried-forward count stale.
+    living = roster.groupby(["village", "day"]).size().rename("living_subjects")
+    daily = daily.drop(columns=["living_subjects", "population_source"]).merge(
+        living.reset_index(), on=["village", "day"], how="left",
+        validate="one_to_one")
+    daily["living_subjects"] = daily["living_subjects"].fillna(0).astype(int)
+    daily["population_source"] = "rat_details"
     box = _box_minutes(frame)
     daily = daily.merge(box, on=["village", "day"], how="left")
-    # Missing session matches are unknown, not proof of zero box time.
-    # Trial-free days can be treated as zero, but days with trials and no
-    # matched sessions must remain missing.
     daily.loc[daily["total_trials"].eq(0), "box_minutes"] = 0
     daily["trial_hour_occupancy_pct"] = (
-        daily["active_rat_hours"] / (24 * daily["living_subjects"].replace(0, np.nan)) * 100
-    )
+        daily["active_rat_hours"] / (24 * daily["living_subjects"].replace(0, np.nan)) * 100)
     daily["actual_box_occupancy_pct"] = (
-        daily["box_minutes"] / (1440 * daily["living_subjects"].replace(0, np.nan)) * 100
+        daily["box_minutes"] / (1440 * daily["living_subjects"].replace(0, np.nan)) * 100)
+    daily["week_start"] = daily["day"] - pd.to_timedelta(
+        daily["day"].dt.weekday, unit="D")
+    weekly = (
+        daily.groupby(["village", "week_start"], as_index=False)
+        .agg(total_trials=("total_trials", "sum"),
+             active_rat_hours=("active_rat_hours", "sum"),
+             box_minutes=("box_minutes", "sum"),
+             subject_days=("living_subjects", "sum"),
+             observed_days=("day", "size"))
     )
-    daily["week_start"] = daily["day"] - pd.to_timedelta(daily["day"].dt.weekday, unit="D")
 
-    # Occupancy denominators use total living-subject-days across the week.
-    # Trial averages below use Method 1: average each rat's daily rate equally.
-    weekly = (daily.groupby(["village", "week_start"], as_index=False)
-              .agg(total_trials=("total_trials", "sum"),
-                   active_rat_hours=("active_rat_hours", "sum"),
-                   box_minutes=("box_minutes", "sum"),
-                   subject_days=("living_subjects", "sum"),
-                   observed_days=("day", "size")))
+    # Identical individual-rat calculation for both plotted measures.
+    living_weeks = roster[["village", "subject", "week_start"]].drop_duplicates()
+    rat_week = _subject_rates(living_weeks, frame, ["village", "week_start"])
+    rat_week_summary = _summarise_rates(rat_week, ["village", "week_start"])
+    weekly = weekly.drop(columns=["total_trials"]).merge(
+        rat_week_summary, on=["village", "week_start"], how="left",
+        validate="one_to_one")
+    if weekly["mean_trials_per_subject_day"].isna().any():
+        raise ValueError("Weekly trial rate without a living rat")
 
-    # Method 1 by experiment: calculate each rat's average daily trials
-    # within the category's observed run span, then average equally across rats.
     frame["experiment"] = _experiment_family(frame)
+    classified = frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)].copy()
     category_daily = (
-        frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
-        .groupby(["village", "experiment", "day"])
+        classified.groupby(["village", "experiment", "day"])
         .size().rename("total_trials").reset_index()
     )
-    experiment_rat_daily = (
-        frame.loc[frame["experiment"].isin(EXPERIMENT_FAMILIES)]
-        .groupby(["village", "experiment", "subject", "day"])
-        .size().rename("trials").reset_index()
-    )
-    experiment_rat_daily["week_start"] = (
-        experiment_rat_daily["day"]
-        - pd.to_timedelta(experiment_rat_daily["day"].dt.weekday, unit="D")
-    )
-    experiment_rat_week = (
-        experiment_rat_daily.groupby(
-            ["village", "experiment", "subject", "week_start"], as_index=False
-        ).agg(subject_week_trials=("trials", "sum"))
-    )
-
-    experiment_weekly_parts = []
+    # Current source data has no explicit assignment history. Infer each
+    # experiment's participant cohort from animals observed in that category
+    # at least once. Include zero-trial weeks for these rats while alive.
+    known_participants = classified[
+        ["village", "experiment", "subject"]].drop_duplicates()
+    active_week_parts = []
     for village, village_days in daily.groupby("village", sort=True):
         categories = [
             family for family in EXPERIMENT_FAMILIES
@@ -452,74 +588,60 @@ def generate(data):
             ])
         ]
         for experiment in categories:
-            family_counts = category_daily.loc[
+            family_days = category_daily.loc[
                 category_daily["village"].eq(village)
                 & category_daily["experiment"].eq(experiment)
             ]
-            first_day = family_counts["day"].min()
-            last_day = family_counts["day"].max()
             active_days = village_days.loc[
-                village_days["day"].between(first_day, last_day), ["day"]
+                village_days["day"].between(
+                    family_days["day"].min(), family_days["day"].max()), ["day"]
             ].copy()
             active_days["village"] = village
             active_days["experiment"] = experiment
-            active_days["week_start"] = (
-                active_days["day"]
-                - pd.to_timedelta(active_days["day"].dt.weekday, unit="D")
-            )
-            active_week_days = (
+            active_days["week_start"] = active_days["day"] - pd.to_timedelta(
+                active_days["day"].dt.weekday, unit="D")
+            active_week_parts.append(
                 active_days.groupby(
                     ["village", "experiment", "week_start"], as_index=False
                 ).agg(days_in_week=("day", "size"))
             )
 
-            rat_week = experiment_rat_week.loc[
-                experiment_rat_week["village"].eq(village)
-                & experiment_rat_week["experiment"].eq(experiment)
-            ].merge(
-                active_week_days,
-                on=["village", "experiment", "week_start"],
-                how="left",
-                validate="many_to_one",
-            )
-            rat_week["subject_daily_average"] = (
-                rat_week["subject_week_trials"] / rat_week["days_in_week"]
-            )
-            observed_weekly = (
-                rat_week.groupby(
-                    ["village", "experiment", "week_start"], as_index=False
-                ).agg(
-                    total_trials=("subject_week_trials", "sum"),
-                    subjects_with_trials=("subject", "nunique"),
-                    mean_trials_per_subject_day=("subject_daily_average", "mean"),
-                )
-            )
-            family_weekly = active_week_days.merge(
-                observed_weekly,
-                on=["village", "experiment", "week_start"],
-                how="left",
-                validate="one_to_one",
-            )
-            for column in (
-                "total_trials",
-                "subjects_with_trials",
-                "mean_trials_per_subject_day",
-            ):
-                family_weekly[column] = family_weekly[column].fillna(0)
-            experiment_weekly_parts.append(family_weekly)
+    category_columns = [
+        "village", "experiment", "week_start", "days_in_week",
+        "total_trials", "subjects_with_trials", "eligible_subjects",
+        "mean_trials_per_subject_day",
+    ]
+    if active_week_parts:
+        active_weeks = pd.concat(active_week_parts, ignore_index=True)
+        eligible_category = (
+            active_weeks[["village", "experiment", "week_start"]]
+            .merge(living_weeks, on=["village", "week_start"], how="inner",
+                   validate="many_to_many")
+            .merge(known_participants,
+                   on=["village", "experiment", "subject"], how="inner",
+                   validate="many_to_one")
+        )
+        category_rat_week = _subject_rates(
+            eligible_category, classified,
+            ["village", "experiment", "week_start"]
+        )
+        by_category = _summarise_rates(
+            category_rat_week, ["village", "experiment", "week_start"]
+        )
+        experiment_weekly = active_weeks.merge(
+            by_category, on=["village", "experiment", "week_start"],
+            how="left", validate="one_to_one")
+        for column in ("total_trials", "subjects_with_trials", "eligible_subjects",
+                       "mean_trials_per_subject_day"):
+            experiment_weekly[column] = experiment_weekly[column].fillna(0)
+    else:
+        category_rat_week = pd.DataFrame(columns=[
+            "village", "experiment", "week_start", "subject",
+            "total_trials", "unique_trial_days", "subject_daily_average"])
+        experiment_weekly = pd.DataFrame(columns=category_columns)
+    experiment_weekly = experiment_weekly[category_columns].sort_values(
+        ["village", "experiment", "week_start"])
 
-    experiment_weekly = (
-        pd.concat(experiment_weekly_parts, ignore_index=True)
-        if experiment_weekly_parts
-        else pd.DataFrame(columns=[
-            "village", "experiment", "week_start", "days_in_week",
-            "total_trials", "subjects_with_trials",
-            "mean_trials_per_subject_day",
-        ])
-    )
-    experiment_weekly = experiment_weekly.sort_values(
-        ["village", "experiment", "week_start"]
-    )
 
     # Full-period Method 1: calculate one rate per rat and category, then
     # average those rates equally across rats with trials in that category.
@@ -563,43 +685,7 @@ def generate(data):
     weekly.loc[weekly["missing_box"], "actual_box_occupancy_pct"] = np.nan
     weekly = weekly.drop(columns="missing_box")
 
-    # Method 1 overall: calculate each rat's weekly average daily rate,
-    # then average those rates equally across rats with trial records that week.
-    rat_daily = (
-        frame.groupby(["village", "subject", "day"])
-        .size().rename("trials").reset_index()
-    )
-    rat_daily["week_start"] = (
-        rat_daily["day"] - pd.to_timedelta(rat_daily["day"].dt.weekday, unit="D")
-    )
-    rat_week = (
-        rat_daily.groupby(["village", "subject", "week_start"], as_index=False)
-        .agg(subject_week_trials=("trials", "sum"))
-        .merge(
-            weekly[["village", "week_start", "observed_days"]],
-            on=["village", "week_start"],
-            how="left",
-            validate="many_to_one",
-        )
-    )
-    rat_week["subject_daily_average"] = (
-        rat_week["subject_week_trials"] / rat_week["observed_days"]
-    )
-    rat_week_summary = (
-        rat_week.groupby(["village", "week_start"], as_index=False)
-        .agg(
-            mean_trials_per_subject_day=("subject_daily_average", "mean"),
-            subjects_with_trials=("subject", "nunique"),
-        )
-    )
-    weekly = weekly.merge(
-        rat_week_summary,
-        on=["village", "week_start"],
-        how="left",
-        validate="one_to_one",
-    )
-    weekly["mean_trials_per_subject_day"] = weekly["mean_trials_per_subject_day"].fillna(0)
-    weekly["subjects_with_trials"] = weekly["subjects_with_trials"].fillna(0)
+    # Overall and experiment summaries now use the same _subject_rates method.
 
     weekly = weekly.sort_values(["village", "week_start"])
 
@@ -607,6 +693,11 @@ def generate(data):
     directory.mkdir(parents=True, exist_ok=True)
     csv_path = directory / "Weekly_Daily_Trials.csv"
     weekly.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    rat_week.to_csv(directory / "Weekly_Daily_Trials_By_Subject.csv",
+                    index=False, encoding="utf-8-sig")
+    category_rat_week.to_csv(
+        directory / "Weekly_Daily_Trials_By_Experiment_Subject.csv",
+        index=False, encoding="utf-8-sig")
     experiment_csv_path = directory / "Weekly_Daily_Trials_By_Experiment.csv"
     experiment_weekly.to_csv(experiment_csv_path, index=False, encoding="utf-8-sig")
     LOGGER.info("Saved weekly trial averages by experiment to %s", experiment_csv_path)
