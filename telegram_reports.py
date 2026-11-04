@@ -10,14 +10,13 @@ import logging
 import os
 from pathlib import Path
 import re
-import threading
 import time
 
 import settings
 
 LOGGER = logging.getLogger("reports_nas.telegram")
 API = "https://api.telegram.org/bot"
-COMMAND_RE = re.compile(r"^/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\\s+(.*))?$")
+COMMAND_RE = re.compile(r"^/([a-zA-Z0-9_]+)(?:@[a-zA-Z0-9_]+)?(?:\s+(.*))?$")
 MAX_DOCUMENT_BYTES = 49 * 1024 * 1024  # Conservative Bot API upload limit.
 
 
