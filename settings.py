@@ -120,7 +120,7 @@ EVENT_NON_ANIMAL_SUBJECTS = (
 # Prefer the REPORTS_TELEGRAM_TOKEN environment variable for the secret.
 TELEGRAM_BOT_TOKEN = ""  # Or set REPORTS_TELEGRAM_TOKEN on the host.
 TELEGRAM_CHAT_ID = ""  # Only this chat is allowed to request and receive reports.
-TELEGRAM_ENABLED = False
+TELEGRAM_ENABLED = os.environ.get('REPORTS_TELEGRAM_ENABLED', 'false').lower() in ('1', 'true', 'yes')
 TELEGRAM_POLL_TIMEOUT = 25
 
 # The keys below are the report names sent to the bot. Add, remove, or
