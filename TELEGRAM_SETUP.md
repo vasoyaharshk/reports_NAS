@@ -92,3 +92,27 @@ After merging the feature branch, run `git pull` on the machine hosting
 `reports_NAS`. The bot is not remotely started by GitHub. You must launch
 `python telegram_reports.py` on your PC and configure Task Scheduler
 separately. Monitor the Windows task history and application logs.
+
+## Synology NAS deployment (preferred)
+
+Use Container Manager on your Synology NAS, rather than Windows Task Scheduler.
+The repository includes `Dockerfile.telegram` and `docker-compose.telegram.yml`.
+Set the NAS share mount on the left side of the volumes to the actual location
+of your files. `/volume1/NAS` is only an example. The container sees `/data`.
+Create persistent directories for reports and prepared output before starting.
+
+Create a local `.env` file next to the Compose file containing the two keys
+`REPORTS_TELEGRAM_TOKEN` and `REPORTS_TELEGRAM_CHAT_ID` with your actual values.
+Keep this file private and never commit it to Git. Import the Compose project
+in Synology Container Manager, or run `docker compose -f docker-compose.telegram.yml up -d --build`
+from the repository folder. The service uses `restart: unless-stopped`, so it
+restarts when Docker starts after a NAS reboot. The NAS must have Internet
+access, and the container must be able to read the data share and write the
+prepared-data and reports directories. Some data preparation steps also write
+merged environment files into the data share.
+
+The Docker environment variables override Windows-only `H:` paths in settings.
+You do not need the Windows PC to remain on. Check Container Manager logs
+for errors, and send `/ping` followed by `/report weekly` to validate.
+
+If your Synology volume is not `volume1`, update the paths accordingly.
