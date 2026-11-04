@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     environment:
       REPORTS_TELEGRAM_TOKEN: ${REPORTS_TELEGRAM_TOKEN}
+      REPORTS_TELEGRAM_ENABLED: 'true'
+      REPORTS_TELEGRAM_CHAT_ID: ${REPORTS_TELEGRAM_CHAT_ID}
       REPORTS_DATA_DIRECTORY: /data
       REPORTS_OUTPUT_DIRECTORY: /output
       REPORTS_REPORT_DIRECTORY: /reports
