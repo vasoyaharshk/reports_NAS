@@ -8,7 +8,7 @@ from pathlib import Path
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent
 # The NAS data folders are outside the cloned repository.
-DATA_DIRECTORY = Path(r"H:\NAS")
+DATA_DIRECTORY = Path(os.environ.get("REPORTS_DATA_DIRECTORY", str(PROJECT_DIRECTORY / "Data")))
 
 # Rat metadata workbook.
 RAT_HEALTH_FILE = DATA_DIRECTORY / "rat_health_sheet" / "rat_health_LE.xlsx"
