@@ -3,6 +3,7 @@
 Edit the paths below on the NAS host before running prepare_data.py.
 CSV inputs use the semicolon separator used by the source exports.
 """
+import os
 from pathlib import Path
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent
@@ -62,12 +63,12 @@ EXCLUDED_SUBJECTS = ("m1", "none", "None", "m2", "m3")
 # with date and inactive_hours columns. Leave as None if it is not available.
 INACTIVE_HOURS_FILE = None
 
-OUTPUT_DIRECTORY = PROJECT_DIRECTORY / "output"
+OUTPUT_DIRECTORY = Path(os.environ.get("REPORTS_OUTPUT_DIRECTORY", str(PROJECT_DIRECTORY / "output")))
 OUTPUT_FILENAME = "prepared_trial_data.csv"
 CSV_SEPARATOR = ";"
 
 # PDF and daily trials-per-task output location.
-REPORT_DIRECTORY = PROJECT_DIRECTORY / "reports"
+REPORT_DIRECTORY = Path(os.environ.get("REPORTS_REPORT_DIRECTORY", str(PROJECT_DIRECTORY / "reports")))
 TRIALS_REPORT_DAYS = 30
 # Number of most recent active trial dates to include per village in the
 # combined status/activity report.
