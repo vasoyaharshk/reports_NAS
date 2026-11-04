@@ -15,6 +15,6 @@ services:
       MPLCONFIGDIR: /tmp/matplotlib
     volumes:
       # Update the Synology host paths for your NAS shares.
-      - /volume1/NAS:/data:ro
+      - /volume1/NAS:/data
       - /volume1/docker/reports_nas/output:/output
       - /volume1/docker/reports_nas/reports:/reports
