@@ -113,3 +113,63 @@ EVENT_SUBJECT_ALIASES = {"chand": "chandler"}
 EVENT_NON_ANIMAL_SUBJECTS = (
     "academy", "none", "nan", "manual", "manual1", "manual2",
 )
+
+# Telegram report request bot.
+# Set both fields locally before starting telegram_reports.py.
+# Prefer the REPORTS_TELEGRAM_TOKEN environment variable for the secret.
+TELEGRAM_BOT_TOKEN = ""  # Or set REPORTS_TELEGRAM_TOKEN on the host.
+TELEGRAM_CHAT_ID = ""  # Only this chat is allowed to request and receive reports.
+TELEGRAM_ENABLED = False
+TELEGRAM_POLL_TIMEOUT = 25
+
+# The keys below are the report names sent to the bot. Add, remove, or
+# rename keys freely. Each module must expose generate(data).
+# "files" controls which generated files are sent, relative to REPORT_DIRECTORY.
+# A command can also be sent as /report weekly or simply /weekly.
+TELEGRAM_REPORTS = {
+    "weekly": {
+        "description": "Weekly trials, occupancy and comparisons across villages",
+        "module": "Weekly_Daily_Trials",
+        "files": ["Weekly_Daily_Trials.pdf", "Weekly_Daily_Trials.csv"],
+    },
+    "status": {
+        "description": "Rat Village status and activity",
+        "module": "Status_Activity_Report",
+        "files": ["Status_Activity_Report.pdf"],
+    },
+    "early": {
+        "description": "Early Training report",
+        "module": "Early_Training",
+        "files": ["Early_Training_Report.pdf"],
+    },
+    "memory": {
+        "description": "Working Memory report",
+        "module": "Working_Memory_Report",
+        "files": ["Working_Memory_Report.pdf"],
+    },
+    "bias": {
+        "description": "Cognitive Bias report",
+        "module": "Cognitive_bias",
+        "files": ["Cognitive_Bias_Report.pdf"],
+    },
+    "probability": {
+        "description": "Probability report",
+        "module": "Probability",
+        "files": ["Probability_Report.pdf"],
+    },
+    "trials": {
+        "description": "Trials per Task PDF and daily CSV",
+        "module": "Trials_Per_Task",
+        "files": ["Trials_Per_Task_Report.pdf", "Trials_Per_Task_Daily.csv"],
+    },
+    "period": {
+        "description": "RV2 and RV3 period comparison workbook",
+        "module": "Period_Comparison",
+        "files": [PERIOD_COMPARISON_OUTPUT_FILENAME],
+    },
+}
+
+# Use a cached prepared_trial_data.csv when available. /refresh runs
+# prepare_data(apply_filters=False) and saves the updated CSV before the report.
+# /report NAME fresh forces preparation for that single request.
+TELEGRAM_USE_PREPARED_CACHE = True
