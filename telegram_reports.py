@@ -151,6 +151,9 @@ def handle_message(message):
         return
 
     command = COMMAND_RE.match(raw)
+    if raw.startswith("/") and not command:
+        send_message("Invalid command. Send /help for usage.")
+        return
     if command:
         name = command.group(1).lower()
         arguments = (command.group(2) or "").strip().lower().split()
