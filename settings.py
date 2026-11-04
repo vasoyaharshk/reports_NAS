@@ -135,7 +135,7 @@ TELEGRAM_REPORTS = {
     "status": {
         "description": "Rat Village status and activity",
         "module": "Status_Activity_Report",
-        "files": ["Status_Activity_Report.pdf"],
+        "files": ["Status_and_Activity_Report.pdf"],
     },
     "early": {
         "description": "Early Training report",
