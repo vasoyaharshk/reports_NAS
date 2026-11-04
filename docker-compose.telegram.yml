@@ -1,0 +1,18 @@
+services:
+  reports-telegram:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram
+    container_name: reports-nas-telegram
+    restart: unless-stopped
+    environment:
+      REPORTS_TELEGRAM_TOKEN: ${REPORTS_TELEGRAM_TOKEN}
+      REPORTS_DATA_DIRECTORY: /data
+      REPORTS_OUTPUT_DIRECTORY: /output
+      REPORTS_REPORT_DIRECTORY: /reports
+      MPLCONFIGDIR: /tmp/matplotlib
+    volumes:
+      # Update the Synology host paths for your NAS shares.
+      - /volume1/NAS:/data:ro
+      - /volume1/docker/reports_nas/output:/output
+      - /volume1/docker/reports_nas/reports:/reports
