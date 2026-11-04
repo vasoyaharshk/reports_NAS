@@ -36,3 +36,7 @@ python prepare_data.py
 ```
 
 This writes the full semicolon-delimited `prepared_trial_data.csv`. It prepares the source files, parses timestamps, derives response and session fields, applies historical task-name corrections, recalculates 60-trial Cognitive Bias blocks, and applies the RV2 half-screen correction from the existing R workflow. Unknown task names remain available in the complete data and are marked `unclassified`.
+
+## Request reports through Telegram
+
+See [TELEGRAM_SETUP.md](TELEGRAM_SETUP.md) for configuration, commands, and automatic Windows startup. Run `python telegram_reports.py` independently from `main.py` to request reports on demand. Set the Telegram token privately through `REPORTS_TELEGRAM_TOKEN` and only allow your configured `TELEGRAM_CHAT_ID`.
